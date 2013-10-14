@@ -27,7 +27,9 @@
 #include "core/mathsupport.h"
 #include "core/md5_seqid.h"
 #include "core/minmax.h"
+#include "core/multithread_api.h"
 #include "core/str_api.h"
+#include "core/thread_api.h"
 #include "core/undef_api.h"
 #include "extended/feature_type.h"
 #include "extended/genome_node.h"
@@ -109,13 +111,13 @@ struct GtTIRStream
   GtArrayTIRPair              first_pairs;
   GtTIRStreamState            state;
 
-  GtUword               num_of_tirs,
+  GtUword                     num_of_tirs,
                               cur_elem_index,
                               prev_seqnum;
 
   /* options */
   GtStr                       *str_indexname;
-  GtUword               min_seed_length,
+  GtUword                     min_seed_length,
                               min_TIR_length,
                               max_TIR_length,
                               min_TIR_distance,
@@ -125,9 +127,12 @@ struct GtTIRStream
   double                      similarity_threshold;
   bool                        no_overlaps;
   bool                        best_overlaps;
-  GtUword               min_TSD_length,
+  GtUword                     min_TSD_length ,
                               max_TSD_length,
                               vicinity;
+
+  GtMutex                     *rmutex, *wmutex;
+  GtUword                     cur_seed;
 };
 
 /* optimized to discard irrelevant seeds as soon as possible */
@@ -454,7 +459,7 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
                                 const GtEncseq *encseq, GtError *err)
 {
   GtUword seedcounter = 0;
-  GtArrayTIRPair new;             /* need to remove overlaps */
+  GtArrayTIRPair new;
   GtXdropresources *xdropresources;
   GtUword total_length = 0;
   GtUword alilen,
@@ -473,8 +478,22 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
   xdropresources = gt_xdrop_resources_new(&tir_stream->arbit_scores);
 
   /* Iterating over seeds */
-  for (seedcounter = 0; seedcounter < tir_stream->seedinfo.seed.nextfreeSeed;
-       seedcounter++) {
+  /* for (seedcounter = 0; seedcounter < tir_stream->seedinfo.seed.nextfreeSeed;
+       seedcounter++) { */
+
+  while (true) {
+    GtUword ulen,
+                  vlen,
+                  seqend,
+                  seqstart;
+    gt_mutex_lock(rmutex);
+    if (tir_stream->cur_seed <  tir_stream->seedinfo.seed.nextfreeSeed)
+      seedcounter = (*tir_stream->cur_seed)++;
+    else {
+      gt_mutex_unlock(rmutex);
+      break;
+    }
+    gt_mutex_unlock(rmutex);
 
     total_length = gt_encseq_total_length(encseq);
     seedptr = &(tir_stream->seedinfo.seed.spaceSeed[seedcounter]);
@@ -589,25 +608,6 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
     }
   }
 
-  /* sort results after seed extension */
-  if (!had_err && tir_stream->first_pairs.spaceTIRPair) {
-    qsort(tir_stream->first_pairs.spaceTIRPair,
-          (size_t) tir_stream->first_pairs.nextfreeTIRPair,
-           sizeof (TIRPair), gt_tir_compare_TIRs);
-  }
-
-  /* initialize array for removing overlaps */
-  GT_INITARRAY(&new, TIRPair);
-
- /* remove overlaps if wanted */
-  if (tir_stream->best_overlaps || tir_stream->no_overlaps) {
-    gt_tir_remove_overlaps(&tir_stream->first_pairs, tir_stream->no_overlaps);
-  }
-
-  /* remove skipped candidates */
-  tir_stream->tir_pairs = tir_compactboundaries(&tir_stream->num_of_tirs,
-                                                &tir_stream->first_pairs);
-
   gt_xdrop_resources_delete(xdropresources);
   gt_seqabstract_delete(sa_useq);
   gt_seqabstract_delete(sa_vseq);
@@ -615,10 +615,25 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
   return had_err;
 }
 
+typedef struct {
+  GtTIRStream *s;
+  GtError *err;
+} GtTIRThreadInfo;
+
+static void* gt_searchforTIRs_threadfunc(void *data) {
+  GtTIRThreadInfo *info = (GtTIRThreadInfo*) data;
+  GT_UNUSED int rval;
+  gt_assert(info);
+  rval = gt_tir_searchforTIRs(info->s, info->s->encseq, info->err);
+  gt_assert(rval == 0);
+  return NULL;
+}
+
 static int gt_tir_stream_next(GtNodeStream *ns, GT_UNUSED GtGenomeNode **gn,
                               GtError *err)
 {
   GtTIRStream *tir_stream;
+  GtTIRThreadInfo tinfo;
   int had_err = 0;
   gt_error_check(err);
   tir_stream = gt_node_stream_cast(gt_tir_stream_class(), ns);
@@ -635,11 +650,37 @@ static int gt_tir_stream_next(GtNodeStream *ns, GT_UNUSED GtGenomeNode **gn,
       had_err = -1;
     }
 
-    /* extend seeds to TIRs and check TIRs */
-    if (!had_err && gt_tir_searchforTIRs(tir_stream,
-                                         tir_stream->encseq, err) != 0) {
+    tinfo.s = tir_stream;
+    tinfo.err = err;
+
+    if (!had_err && gt_multithread(gt_searchforTIRs_threadfunc,
+                                   &tinfo, err) != 0) {
       had_err = -1;
     }
+    /* extend seeds to TIRs and check TIRs */
+    /* if (!had_err && gt_tir_searchforTIRs(tir_stream,
+                                         tir_stream->encseq, err) != 0) {
+      had_err = -1;
+    } */
+
+      /* sort results after seed extension */
+    if (!had_err && tir_stream->first_pairs.spaceTIRPair) {
+      qsort(tir_stream->first_pairs.spaceTIRPair,
+            (size_t) tir_stream->first_pairs.nextfreeTIRPair,
+             sizeof (TIRPair), gt_tir_compare_TIRs);
+    }
+
+    /* initialize array for removing overlaps */
+    GT_INITARRAY(&new, TIRPair);
+
+   /* remove overlaps if wanted */
+    if (tir_stream->best_overlaps || tir_stream->no_overlaps) {
+      gt_tir_remove_overlaps(&tir_stream->first_pairs, tir_stream->no_overlaps);
+    }
+
+    /* remove skipped candidates */
+    tir_stream->tir_pairs = tir_compactboundaries(&tir_stream->num_of_tirs,
+                                                  &tir_stream->first_pairs);
 
     GT_FREEARRAY(&tir_stream->seedinfo.seed, Seed);
     tir_stream->state = GT_TIR_STREAM_STATE_REGIONS;
@@ -898,6 +939,8 @@ static void gt_tir_stream_free(GtNodeStream *ns)
   GtTIRStream *tir_stream = gt_node_stream_cast(gt_tir_stream_class(), ns);
   GT_FREEARRAY(&tir_stream->first_pairs, TIRPair);
   gt_str_delete(tir_stream->str_indexname);
+  gt_mutex_delete(tir_stream->rmutex);
+  gt_mutex_delete(tir_stream->rmutex);
   if (tir_stream->ssar != NULL)
     gt_freeSequentialsuffixarrayreader(&tir_stream->ssar);
   if (tir_stream->tir_pairs != NULL)
@@ -954,6 +997,9 @@ GtNodeStream* gt_tir_stream_new(GtStr *str_indexname,
   tir_stream->min_TSD_length = min_TSD_length;
   tir_stream->max_TSD_length = max_TSD_length;
   tir_stream->vicinity = vicinity;
+
+  tir_stream->rmutex = gt_mutex_new();
+  tir_stream->wmutex = gt_mutex_new();
 
   tir_stream->seedinfo.max_tir_length = max_TIR_length;
   tir_stream->seedinfo.min_tir_length = min_TIR_length;
