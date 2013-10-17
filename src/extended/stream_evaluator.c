@@ -503,7 +503,8 @@ static int process_real_feature(GtFeatureNode *fn, void *data,
         }
     }
   }
-  else if (gt_feature_node_has_type(fn, gt_ft_LTR_retrotransposon)) {
+  else if (gt_feature_node_has_type(fn, gt_ft_LTR_retrotransposon)
+             || gt_feature_node_has_type(fn, gt_ft_terminal_inverted_repeat_element)) {
     gn_ref = gt_genome_node_ref((GtGenomeNode*) fn);
     gt_array_add(info->slot->LTRs, gn_ref);
   }
@@ -1124,7 +1125,8 @@ static int process_predicted_feature(GtFeatureNode *fn, void *data,
         }
     }
   }
-  else if (gt_feature_node_has_type(fn, gt_ft_LTR_retrotransposon)) {
+  else if (gt_feature_node_has_type(fn, gt_ft_LTR_retrotransposon)
+      || gt_feature_node_has_type(fn, gt_ft_terminal_inverted_repeat_element)) {
     /* store predicted LTR */
     gt_evaluator_add_predicted(info->LTR_evaluator, 1);
     /* determine true LTR */
