@@ -26,7 +26,7 @@
 #include "extended/gff3_out_stream_api.h"
 #include "extended/tir_stream.h"
 #include "extended/visitor_stream.h"
-  /* XXX */
+/* XXX */
 #include "ltr/ltrdigest_pdom_visitor.h"
 #include "ltr/pdom_model_set.h"
 #include "match/xdrop.h"
@@ -118,7 +118,7 @@ static GtOptionParser* gt_tir_option_parser_new(void *tool_arguments)
 
   /* init */
   op = gt_option_parser_new("[option ...] -index INDEXNAME",
-                            "Identify Terminal Inverted Repeat (TIR) elements,"
+                            "Identify Terminal Inverted Repeat (TIR) elements, "
                             "such as DNA transposons.");
 
   /* -index */
@@ -289,8 +289,7 @@ static GtOptionParser* gt_tir_option_parser_new(void *tool_arguments)
 }
 
 static int gt_tir_arguments_check(GT_UNUSED int rest_argc,
-                                       void *tool_arguments,
-                                       GT_UNUSED GtError *err)
+                                  void *tool_arguments, GT_UNUSED GtError *err)
 {
   GtTirArguments *arguments = tool_arguments;
   int had_err = 0;
@@ -412,8 +411,10 @@ static int gt_tir_runner(GT_UNUSED int argc, GT_UNUSED const char **argv,
     } else had_err = -1;
   }
 
-  gff3_out_stream = gt_gff3_out_stream_new(last_stream, NULL);
-  last_stream = gff3_out_stream;
+  if (!had_err) {
+    gff3_out_stream = gt_gff3_out_stream_new(last_stream, NULL);
+    last_stream = gff3_out_stream;
+  }
 
   /* pull the features through the stream and free them afterwards */
   if (!had_err)
