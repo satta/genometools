@@ -214,3 +214,8 @@ bool gt_querymatch_queryreverse(const GtQuerymatch *querymatch)
 {
   return querymatch->query_as_reversecopy;
 }
+
+GtReadmode gt_querymatch_readmode(const GtQuerymatch *querymatch)
+{
+  return querymatch->readmode;
+}

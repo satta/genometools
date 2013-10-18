@@ -65,4 +65,6 @@ GtUword gt_querymatch_dbseqnum(const GtEncseq *encseq,
 
 bool gt_querymatch_queryreverse(const GtQuerymatch *querymatch);
 
+GtReadmode gt_querymatch_readmode(const GtQuerymatch *querymatch);
+
 #endif

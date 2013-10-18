@@ -569,7 +569,7 @@ static int gt_repfind_runner(GT_UNUSED int argc,
         if (!haserr && arguments->reverse)
         {
           if (gt_callenumselfmatches(gt_str_get(arguments->indexname),
-                                     GT_READMODE_REVERSE,
+                                     GT_READMODE_REVCOMPL,
                                      arguments->userdefinedleastlength,
                                      /*arguments->extendseed
                                        ? gt_processxdropquerymatches

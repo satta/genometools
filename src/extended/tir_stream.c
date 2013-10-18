@@ -35,6 +35,7 @@
 #include "extended/genome_node.h"
 #include "extended/node_stream_api.h"
 #include "extended/region_node_api.h"
+#include "extended/reverse_api.h"
 #include "extended/tir_stream.h"
 #include "match/esa-maxpairs.h"
 #include "match/esa-mmsearch.h"
@@ -66,6 +67,7 @@ typedef struct
   GtUword num_of_contigs;
   GtUword midpos;
   GtUword totallength;
+  GtUword querylen;
 } SeedInfo;
 
 typedef struct
@@ -136,9 +138,9 @@ struct GtTIRStream
 };
 
 /* optimized to discard irrelevant seeds as soon as possible */
-static int gt_tir_store_seeds(void *info, const GtEncseq *encseq,
-                              GtUword len, GtUword pos1,
-                              GtUword pos2, GT_UNUSED GtError *err)
+static inline int gt_tir_store_seeds_mp(void *info, const GtEncseq *encseq,
+                                 GtUword len, GtUword pos1,
+                                 GtUword pos2, GT_UNUSED GtError *err)
 {
   GtUword seqnum1,
                 seqnum2;
@@ -180,6 +182,24 @@ static int gt_tir_store_seeds(void *info, const GtEncseq *encseq,
   nextfreeseedpointer->offset = distance;
   nextfreeseedpointer->len = len;
   nextfreeseedpointer->contignumber = seqnum1;
+  return 0;
+}
+
+static int gt_tir_store_seeds(GT_UNUSED void *info,
+                                   GT_UNUSED const GtEncseq *encseq,
+                                   GT_UNUSED const GtQuerymatch *querymatch,
+                                   GT_UNUSED const GtUchar *query,
+                                   GT_UNUSED GtUword query_totallength,
+                                   GT_UNUSED GtError *err)
+{
+/*   SeedInfo *si = (SeedInfo*) info;
+  printf("%lu %lu %lu %s\n", gt_querymatch_dbstart(querymatch),
+                              si->querylen
+                                - gt_querymatch_querystart(querymatch)
+                                - gt_querymatch_querylen(querymatch),
+                              gt_querymatch_querylen(querymatch),
+                              gt_readmode_show(
+                                           gt_querymatch_readmode(querymatch))); */
   return 0;
 }
 
@@ -640,6 +660,8 @@ static void* gt_searchforTIRs_threadfunc(void *data) {
   return NULL;
 }
 
+#define GT_TIR_BLOCKLEN 10000
+
 static int gt_tir_stream_next(GtNodeStream *ns, GT_UNUSED GtGenomeNode **gn,
                               GtError *err)
 {
@@ -649,11 +671,71 @@ static int gt_tir_stream_next(GtNodeStream *ns, GT_UNUSED GtGenomeNode **gn,
   gt_error_check(err);
   tir_stream = gt_node_stream_cast(gt_tir_stream_class(), ns);
 
-  gt_log_log("minseedlen: %lu\n", (unsigned long) tir_stream->min_seed_length);
-
   /* generate and check seeds */
    if (tir_stream->state == GT_TIR_STREAM_STATE_START) {
-    if (!had_err && gt_enumeratemaxpairs(tir_stream->ssar,
+    unsigned long seqno, startpos, length = GT_TIR_BLOCKLEN;
+    GtUchar buf[GT_TIR_BLOCKLEN],
+           rbuf[GT_TIR_BLOCKLEN];
+
+    /* XXX: multithread on block basis? */
+
+    for (seqno = 0; seqno < gt_encseq_num_of_sequences(tir_stream->encseq);
+           seqno++) {
+      int rval = 0;
+      unsigned long seqstartpos = gt_encseq_seqstartpos(tir_stream->encseq,
+                                                        seqno);
+      for (startpos = 0; startpos < gt_encseq_seqlength(tir_stream->encseq,
+             seqno); startpos += length) {
+        unsigned long endpos, partlen;
+        gt_log_log("startpos: %lu\n", startpos);
+        gt_log_log("seqlength: %lu\n",
+                                gt_encseq_seqlength(tir_stream->encseq, seqno));
+        gt_log_log("endpos1: %lu\n", startpos + length);
+        gt_log_log("endpos2: %lu\n", seqstartpos +
+                              gt_encseq_seqlength(tir_stream->encseq, seqno)-1);
+        endpos = MIN(startpos + length,
+                seqstartpos + gt_encseq_seqlength(tir_stream->encseq, seqno)-1);
+        gt_log_log("endpos: %lu\n", endpos);
+        partlen = endpos - startpos + 1;
+        gt_log_log("partlen: %lu\n", partlen);
+
+        gt_encseq_extract_encoded(tir_stream->encseq, buf,
+                                  seqstartpos + startpos, seqstartpos + endpos);
+        gt_encseq_extract_decoded(tir_stream->encseq, (char*) rbuf,
+                                  seqstartpos + startpos, seqstartpos + endpos);
+        gt_reverse_complement((char*) rbuf, partlen, NULL);
+        gt_alphabet_encode_seq(gt_encseq_alphabet(tir_stream->encseq),
+                               rbuf, (char*) rbuf, partlen);
+
+        /* unsigned long i;
+        for (i=0; i < partlen; i++) {
+          printf("%01d", buf[i]);
+        }
+        printf("\n");
+        for (i=0; i < partlen; i++) {
+          printf("%01d", rbuf[i]);
+        }
+        printf("\n"); */
+
+        tir_stream->seedinfo.querylen = partlen;
+        rval = gt_sarrquerysubstringmatch(buf,
+                                         partlen,
+                                         rbuf,
+                                         partlen,
+                                         tir_stream->min_seed_length,
+                                         gt_encseq_alphabet(tir_stream->encseq),
+                                         gt_tir_store_seeds,
+                                         &tir_stream->seedinfo,
+                                         NULL, err);
+        gt_assert(!rval); /* XXX */
+
+      }
+      /* XXX: process last portion */
+    }
+
+    exit(0);   /* XXX */
+
+    /* if (!had_err && gt_enumeratemaxpairs(tir_stream->ssar,
                       tir_stream->encseq,
                       gt_readmodeSequentialsuffixarrayreader(tir_stream->ssar),
                       (unsigned int) tir_stream->min_seed_length,
@@ -661,7 +743,10 @@ static int gt_tir_stream_next(GtNodeStream *ns, GT_UNUSED GtGenomeNode **gn,
                       &tir_stream->seedinfo,
                       err) != 0) {
       had_err = -1;
-    }
+    }*/
+
+
+
 
     tinfo.s = tir_stream;
     tinfo.err = err;
@@ -1013,7 +1098,7 @@ GtNodeStream* gt_tir_stream_new(GtStr *str_indexname,
 
   tir_stream->ssar =
       gt_newSequentialsuffixarrayreaderfromfile(gt_str_get(str_indexname),
-                                                SARR_LCPTAB | SARR_SUFTAB |
+                                              /*  SARR_LCPTAB | SARR_SUFTAB | */
                                                 SARR_ESQTAB | SARR_DESTAB |
                                                 SARR_SSPTAB | SARR_SDSTAB,
                                                 SEQ_scan,
@@ -1024,12 +1109,12 @@ GtNodeStream* gt_tir_stream_new(GtStr *str_indexname,
     return NULL;
   }
   tir_stream->encseq = gt_encseqSequentialsuffixarrayreader(tir_stream->ssar);
-  if (!gt_encseq_is_mirrored(tir_stream->encseq)) {
+  /* if (!gt_encseq_is_mirrored(tir_stream->encseq)) {
     gt_error_set(err, "index for '%s' is not mirrored (suffixerator option "
                       "-mirrored)!", gt_str_get(str_indexname));
     gt_node_stream_delete(ns);
     return NULL;
-  }
+  }*/
   GT_INITARRAY(&tir_stream->seedinfo.seed, Seed);
   GT_INITARRAY(&tir_stream->first_pairs, TIRPair);
   tir_stream->seedinfo.num_of_contigs =
