@@ -42,6 +42,7 @@ GtNodeStream*   gt_tir_stream_new(GtStr *str_indexname,
                                   GtUword min_TSD_length,
                                   GtUword max_TSD_length,
                                   GtUword vicinity,
+                                  GtUword blocksize,
                                   GtError *err);
 
 const GtEncseq* gt_tir_stream_get_encseq(GtTIRStream *ts);

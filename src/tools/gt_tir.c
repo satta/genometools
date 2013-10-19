@@ -42,7 +42,8 @@ typedef struct {
                 max_TIR_distance,
                 min_TSD_length,
                 max_TSD_length,
-                vicinity;
+                vicinity,
+                blocksize;
   GtXdropArbitraryscores arbit_scores;
   int xdrop_belowscore;
   double similarity_threshold,
@@ -98,6 +99,7 @@ static GtOptionParser* gt_tir_option_parser_new(void *tool_arguments)
            *optionmintsd,     /* minimal length for Target Site Duplication */
            *optionmaxtsd,     /* maximal length for Target Site Duplication */
            *optionvicinity,   /* vicinity around TIRs to be searched for TSDs */
+           *optionblocksize,
            *optionhmms,
            *optionevalcutoff,
            *optionpdomcutoff,
@@ -248,6 +250,15 @@ static GtOptionParser* gt_tir_option_parser_new(void *tool_arguments)
                                                60U, 1U, 500U);
   gt_option_parser_add_option(op, optionvicinity);
 
+  /* -blocksize */
+  optionblocksize = gt_option_new_uword_min_max("blocksize",
+                                                "specify the width of a "
+                                                "block of sequence searched "
+                                                "for TIR seeds",
+                                                &arguments->blocksize,
+                                                10000U, 2000U, 100000U);
+  gt_option_parser_add_option(op, optionblocksize);
+
   optionhmms = gt_option_new_filename_array("hmms",
                                     "profile HMM models for domain detection "
                                     "(separate by spaces, finish with --) in "
@@ -364,6 +375,7 @@ static int gt_tir_runner(GT_UNUSED int argc, GT_UNUSED const char **argv,
                                  arguments->min_TSD_length,
                                  arguments->max_TSD_length,
                                  arguments->vicinity,
+                                 arguments->blocksize,
                                  err);
 
   if (tir_stream == NULL)

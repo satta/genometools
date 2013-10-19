@@ -39,7 +39,6 @@
 #include "extended/tir_stream.h"
 #include "match/esa-maxpairs.h"
 #include "match/esa-mmsearch.h"
-#include "match/esa-seqread.h"
 #include "match/greedyedist.h"
 #include "match/querymatch.h"
 #include "match/xdrop.h"
@@ -67,7 +66,9 @@ typedef struct
   GtUword num_of_contigs;
   GtUword midpos;
   GtUword totallength;
-  GtUword querylen;
+   GtUword curoffset;
+  GtUword curseqnum;
+  GtTIRStream *tir_stream;
 } SeedInfo;
 
 typedef struct
@@ -106,8 +107,7 @@ typedef enum {
 struct GtTIRStream
 {
   const GtNodeStream          parent_instance;
-  const GtEncseq              *encseq;
-  Sequentialsuffixarrayreader *ssar;
+  GtEncseq                    *encseq;
   SeedInfo                    seedinfo;
   const TIRPair**             tir_pairs;
   GtArrayTIRPair              first_pairs;
@@ -131,23 +131,32 @@ struct GtTIRStream
   bool                        best_overlaps;
   GtUword                     min_TSD_length ,
                               max_TSD_length,
-                              vicinity;
+                              vicinity,
+                              blocksize;
 
   GtMutex                     *rmutex, *wmutex;
   GtUword                     cur_seed;
 };
 
-/* optimized to discard irrelevant seeds as soon as possible */
-static inline int gt_tir_store_seeds_mp(void *info, const GtEncseq *encseq,
-                                 GtUword len, GtUword pos1,
-                                 GtUword pos2, GT_UNUSED GtError *err)
+static int gt_tir_store_seeds(void *info,
+                              GT_UNUSED const GtEncseq *encseq,
+                              const GtQuerymatch *querymatch,
+                              GT_UNUSED const GtUchar *query,
+                              GtUword query_totallength,
+                              GT_UNUSED GtError *err)
 {
-  GtUword seqnum1,
-                seqnum2;
+  SeedInfo *si = (SeedInfo*) info;
+  GT_UNUSED char fwd[BUFSIZ], rev[BUFSIZ];  /* XXX */
+  unsigned long pos1, pos2, len;
   Seed *nextfreeseedpointer;
   GtUword distance;
-  SeedInfo *seeds = (SeedInfo *) info;
   gt_error_check(err);
+
+  /* calculate absolute match coordinates */
+  pos1 = si->curoffset + gt_querymatch_dbstart(querymatch);
+  len = gt_querymatch_querylen(querymatch);
+  pos2 = si->curoffset + query_totallength - gt_querymatch_querystart(querymatch)
+           - len;
 
   /* ensure order of seeds */
   if (pos1 > pos2) {
@@ -157,49 +166,31 @@ static inline int gt_tir_store_seeds_mp(void *info, const GtEncseq *encseq,
     pos2 = tmp;
   }
 
-  /* match mirrored vs. unmirrored */
-  if (pos1 > seeds->midpos || pos2 < seeds->midpos)
-    return 0;
+  /* gt_encseq_extract_decoded(si->tir_stream->encseq, fwd,
+                            pos1,
+                            pos1 + len - 1);
+  gt_encseq_extract_decoded(si->tir_stream->encseq, rev,
+                            pos2,
+                            pos2 + len - 1);
+  fwd[gt_querymatch_querylen(querymatch)] = '\0';
+  rev[gt_querymatch_querylen(querymatch)] = '\0';
+  printf("%s %s\n", fwd, rev); */
 
   /* check distance constraints */
-  distance = (GT_REVERSEPOS(seeds->totallength, pos2) - len + 1) - pos1;
-  if (distance < seeds->min_tir_distance || distance > seeds->max_tir_distance)
-    return 0;
-
-  /* check whether matches are on the `same' contig */
-  seqnum1 = gt_encseq_seqnum(encseq, pos1);
-  seqnum2 = gt_encseq_seqnum(encseq, pos2);
-  if (seqnum2 != seeds->num_of_contigs - seqnum1 - 1)
+  distance = pos2 - pos1;
+  if (distance < si->min_tir_distance || distance > si->max_tir_distance)
     return 0;
 
   /* check length constraints */
-  if (len > seeds->max_tir_length)
+  if (len > si->max_tir_length)
     return 0;
 
-  GT_GETNEXTFREEINARRAY(nextfreeseedpointer, &seeds->seed, Seed, 256);
+  GT_GETNEXTFREEINARRAY(nextfreeseedpointer, &si->seed, Seed, 256);
   nextfreeseedpointer->pos1 = pos1;
   nextfreeseedpointer->pos2 = pos2;
   nextfreeseedpointer->offset = distance;
   nextfreeseedpointer->len = len;
-  nextfreeseedpointer->contignumber = seqnum1;
-  return 0;
-}
-
-static int gt_tir_store_seeds(GT_UNUSED void *info,
-                                   GT_UNUSED const GtEncseq *encseq,
-                                   GT_UNUSED const GtQuerymatch *querymatch,
-                                   GT_UNUSED const GtUchar *query,
-                                   GT_UNUSED GtUword query_totallength,
-                                   GT_UNUSED GtError *err)
-{
-/*   SeedInfo *si = (SeedInfo*) info;
-  printf("%lu %lu %lu %s\n", gt_querymatch_dbstart(querymatch),
-                              si->querylen
-                                - gt_querymatch_querystart(querymatch)
-                                - gt_querymatch_querylen(querymatch),
-                              gt_querymatch_querylen(querymatch),
-                              gt_readmode_show(
-                                           gt_querymatch_readmode(querymatch))); */
+  nextfreeseedpointer->contignumber = si->curseqnum;
   return 0;
 }
 
@@ -297,14 +288,17 @@ static void gt_tir_remove_overlaps(GtArrayTIRPair *arrayTIRPair,
 static const TIRPair** tir_compactboundaries(GtUword *numofboundaries,
                                              const GtArrayTIRPair *pairs)
 {
-  GtUword countboundaries = 0, nextfill = 0;
+  GtUword countboundaries = 0, nextfill = 0, skipcnt = 0;
   const TIRPair *bd, **bdptrtab = NULL;
 
+  gt_log_log("compacting %lu boundaries", pairs->nextfreeTIRPair);
   for (bd = pairs->spaceTIRPair; bd < pairs->spaceTIRPair +
                                                  pairs->nextfreeTIRPair; bd++) {
     gt_assert(bd != NULL);
     if (!bd->skip)
       countboundaries++;
+    else
+      skipcnt++;
   }
   if (countboundaries > 0) {
     bdptrtab = gt_malloc(sizeof (TIRPair *) * countboundaries);
@@ -316,6 +310,7 @@ static const TIRPair** tir_compactboundaries(GtUword *numofboundaries,
         bdptrtab[nextfill++] = bd;
     }
   }
+  gt_log_log("skipcount: %lu", skipcnt);
   *numofboundaries = countboundaries;
   return bdptrtab;
 }
@@ -496,12 +491,14 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
                                 const GtEncseq *encseq, GtError *err)
 {
   GtUword seedcounter = 0;
+  GtUword added = 0, skipped = 0;
   GtXdropresources *xdropresources;
   GtUword total_length = 0;
   GtUword alilen,
-                seqstart1, seqend1,
-                seqstart2, seqend2,
-                edist, ulen, vlen;
+          seqstart1, seqend1,
+          seqstart2, seqend2,
+          edist, ulen, vlen,
+          mirpos2;
   Seed *seedptr;
   TIRPair pair, *pairp;
   int had_err = 0;
@@ -528,24 +525,38 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
     gt_assert(tir_stream->seedinfo.max_tir_length >= seedptr->len);
     alilen = tir_stream->seedinfo.max_tir_length - seedptr->len;
     seqstart1 = gt_encseq_seqstartpos(tir_stream->encseq,
-                                       seedptr->contignumber);
+                                      seedptr->contignumber);
     seqend1 = seqstart1
-                + gt_encseq_seqlength(tir_stream->encseq,seedptr->contignumber);
+                + gt_encseq_seqlength(tir_stream->encseq,
+                                      seedptr->contignumber);
+    mirpos2 = GT_REVERSEPOS(total_length, seedptr->pos2) - seedptr->len + 1;
     seqstart2 = GT_REVERSEPOS(total_length, seqend1);
     seqend2 = GT_REVERSEPOS(total_length, seqstart1);
 
+    /* gt_mutex_lock(tir_stream->wmutex);
+    GT_UNUSED char buf[seedptr->len+1];
+    buf[seedptr->len] = '\0';
+    gt_encseq_extract_decoded(tir_stream->encseq, buf,
+                              seedptr->pos1, seedptr->pos1 + seedptr->len -1);
+    printf("%s ", buf);
+    gt_encseq_extract_decoded(tir_stream->encseq, buf,
+                              mirpos2,
+                              mirpos2 + seedptr->len - 1);
+    printf("%s\n", buf);
+    gt_mutex_unlock(tir_stream->wmutex); */
+
     /* left (reverse) xdrop */
-    if (seedptr->pos1 > seqstart1 && seedptr->pos2 > seqstart2)
+    if (seedptr->pos1 > seqstart1 && mirpos2 > seqstart2)
     {
       if (alilen <= seedptr->pos1 - seqstart1
-            && alilen <= seedptr->pos2 - seqstart2)
+            && alilen <= mirpos2 - seqstart2)
       {
         gt_seqabstract_reinit_encseq(sa_useq, encseq, alilen, 0);
         gt_seqabstract_reinit_encseq(sa_vseq, encseq, alilen, 0);
       } else
       {
         GtUword maxleft = MIN(seedptr->pos1 - seqstart1,
-                                    seedptr->pos2 - seqstart2);
+                                    mirpos2 - seqstart2);
         gt_seqabstract_reinit_encseq(sa_useq, encseq, maxleft, 0);
         gt_seqabstract_reinit_encseq(sa_vseq, encseq, maxleft, 0);
       }
@@ -555,7 +566,7 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
                                     sa_useq,
                                     sa_vseq,
                                     seedptr->pos1,
-                                    seedptr->pos2 + seedptr->offset,
+                                    mirpos2,
                                    (GtXdropscore) tir_stream->xdrop_belowscore);
     } else
     {
@@ -566,17 +577,17 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
 
     /* right (forward) xdrop */
     if (seedptr->pos1 + seedptr->len < seqend1
-          && seedptr->pos2 + seedptr->len < seqend2)
+          && mirpos2 + seedptr->len < seqend2)
     {
       if (alilen <= seqend1 - (seedptr->pos1 + seedptr->len)
-            && alilen <= seqend2 - (seedptr->pos2 + seedptr->len))
+            && alilen <= seqend2 - (mirpos2 + seedptr->len))
       {
         gt_seqabstract_reinit_encseq(sa_useq, encseq, alilen, 0);
         gt_seqabstract_reinit_encseq(sa_vseq, encseq, alilen, 0);
       } else
       {
         GtUword maxright = MIN(seqend1 - (seedptr->pos1 + seedptr->len),
-                                     seqend2 - (seedptr->pos2 + seedptr->len));
+                                     seqend2 - (mirpos2 + seedptr->len));
         gt_seqabstract_reinit_encseq(sa_useq, encseq, maxright, 0);
         gt_seqabstract_reinit_encseq(sa_vseq, encseq, maxright, 0);
       }
@@ -586,7 +597,7 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
                                     sa_useq,
                                     sa_vseq,
                                     seedptr->pos1 + seedptr->len,
-                                    seedptr->pos2 + seedptr->len,
+                                    mirpos2 + seedptr->len,
                                    (GtXdropscore) tir_stream->xdrop_belowscore);
     } else
     {
@@ -597,11 +608,10 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
 
     /* re-check length constraints */
     if (seedptr->pos1 + seedptr->len - 1 + xdropbest_right.ivalue -
-        seedptr->pos2 - xdropbest_left.jvalue + 1 < tir_stream->min_TIR_length
+        mirpos2 - xdropbest_left.jvalue + 1 < tir_stream->min_TIR_length
         || seedptr->pos1 + seedptr->len - 1 + xdropbest_right.ivalue -
-        seedptr->pos2 - xdropbest_left.jvalue + 1 < tir_stream->min_TIR_length)
+        mirpos2 - xdropbest_left.jvalue + 1 < tir_stream->min_TIR_length)
       continue;
-
 
     /* store positions for the found TIR */
     pair.contignumber = seedptr->contignumber;
@@ -609,8 +619,8 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
     pair.left_tir_start = seedptr->pos1 - xdropbest_left.ivalue;
     pair.left_tir_end = seedptr->pos1 + seedptr->len - 1
                            + xdropbest_right.ivalue;
-    pair.right_tir_start = seedptr->pos2 - xdropbest_left.jvalue;
-    pair.right_tir_end = seedptr->pos2 + seedptr->len - 1
+    pair.right_tir_start = mirpos2 - xdropbest_left.jvalue;
+    pair.right_tir_end = mirpos2 + seedptr->len - 1
                             + xdropbest_right.jvalue;
     pair.right_transformed_start = GT_REVERSEPOS(total_length,
                                                  pair.right_tir_end);
@@ -618,10 +628,9 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
                                                pair.right_tir_start);
     pair.similarity = 0.0;
     pair.skip = false;
-    tir_stream->num_of_tirs++;
 
     /* TSDs */
-    gt_tir_search_for_TSDs(tir_stream, &pair, encseq, err);
+    //gt_tir_search_for_TSDs(tir_stream, &pair, encseq, err);
 
     /* determine and filter by similarity */
     ulen = pair.left_tir_end - pair.left_tir_start + 1;
@@ -635,10 +644,14 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
       gt_mutex_lock(tir_stream->wmutex);
       GT_GETNEXTFREEINARRAY(pairp, &tir_stream->first_pairs, TIRPair, 256);
       *pairp = pair;
+      added++;
       gt_mutex_unlock(tir_stream->wmutex);
-    }
+    } else skipped++;
   }
 
+  gt_mutex_lock(tir_stream->wmutex);
+  gt_log_log("added: %lu skipped: %lu", added, skipped);
+  gt_mutex_unlock(tir_stream->wmutex);
   gt_xdrop_resources_delete(xdropresources);
   gt_seqabstract_delete(sa_useq);
   gt_seqabstract_delete(sa_vseq);
@@ -660,9 +673,7 @@ static void* gt_searchforTIRs_threadfunc(void *data) {
   return NULL;
 }
 
-#define GT_TIR_BLOCKLEN 10000
-
-static int gt_tir_stream_next(GtNodeStream *ns, GT_UNUSED GtGenomeNode **gn,
+static int gt_tir_stream_next(GtNodeStream *ns, GtGenomeNode **gn,
                               GtError *err)
 {
   GtTIRStream *tir_stream;
@@ -671,33 +682,37 @@ static int gt_tir_stream_next(GtNodeStream *ns, GT_UNUSED GtGenomeNode **gn,
   gt_error_check(err);
   tir_stream = gt_node_stream_cast(gt_tir_stream_class(), ns);
 
-  /* generate and check seeds */
-   if (tir_stream->state == GT_TIR_STREAM_STATE_START) {
-    unsigned long seqno, startpos, length = GT_TIR_BLOCKLEN;
-    GtUchar buf[GT_TIR_BLOCKLEN],
-           rbuf[GT_TIR_BLOCKLEN];
+  /* XXX: multithread on block basis? */
 
-    /* XXX: multithread on block basis? */
+  /* generate and check seeds */
+  if (tir_stream->state == GT_TIR_STREAM_STATE_START) {
+    unsigned long seqno = 0,
+                  startpos = 0,
+                  length = tir_stream->blocksize;
+    GtUchar *buf,
+            *rbuf;
+    buf = gt_malloc(sizeof (GtUchar) * tir_stream->blocksize);
+    rbuf = gt_malloc(sizeof (GtUchar) * tir_stream->blocksize);
 
     for (seqno = 0; seqno < gt_encseq_num_of_sequences(tir_stream->encseq);
            seqno++) {
       int rval = 0;
       unsigned long seqstartpos = gt_encseq_seqstartpos(tir_stream->encseq,
                                                         seqno);
-      for (startpos = 0; startpos < gt_encseq_seqlength(tir_stream->encseq,
-             seqno); startpos += length) {
+      while(!had_err
+              && startpos < gt_encseq_seqlength(tir_stream->encseq, seqno)) {
         unsigned long endpos, partlen;
-        gt_log_log("startpos: %lu\n", startpos);
-        gt_log_log("seqlength: %lu\n",
+        gt_log_log("startpos: %lu", startpos);
+        gt_log_log("seqlength: %lu",
                                 gt_encseq_seqlength(tir_stream->encseq, seqno));
-        gt_log_log("endpos1: %lu\n", startpos + length);
-        gt_log_log("endpos2: %lu\n", seqstartpos +
+        gt_log_log("endpos1: %lu", startpos + length);
+        gt_log_log("endpos2: %lu", seqstartpos +
                               gt_encseq_seqlength(tir_stream->encseq, seqno)-1);
         endpos = MIN(startpos + length,
                 seqstartpos + gt_encseq_seqlength(tir_stream->encseq, seqno)-1);
-        gt_log_log("endpos: %lu\n", endpos);
+        gt_log_log("endpos: %lu", endpos);
         partlen = endpos - startpos + 1;
-        gt_log_log("partlen: %lu\n", partlen);
+        gt_log_log("partlen: %lu", partlen);
 
         gt_encseq_extract_encoded(tir_stream->encseq, buf,
                                   seqstartpos + startpos, seqstartpos + endpos);
@@ -707,17 +722,9 @@ static int gt_tir_stream_next(GtNodeStream *ns, GT_UNUSED GtGenomeNode **gn,
         gt_alphabet_encode_seq(gt_encseq_alphabet(tir_stream->encseq),
                                rbuf, (char*) rbuf, partlen);
 
-        /* unsigned long i;
-        for (i=0; i < partlen; i++) {
-          printf("%01d", buf[i]);
-        }
-        printf("\n");
-        for (i=0; i < partlen; i++) {
-          printf("%01d", rbuf[i]);
-        }
-        printf("\n"); */
-
-        tir_stream->seedinfo.querylen = partlen;
+        tir_stream->seedinfo.curoffset = seqstartpos;
+        tir_stream->seedinfo.curseqnum = seqno;
+        tir_stream->seedinfo.tir_stream = tir_stream;
         rval = gt_sarrquerysubstringmatch(buf,
                                          partlen,
                                          rbuf,
@@ -729,32 +736,42 @@ static int gt_tir_stream_next(GtNodeStream *ns, GT_UNUSED GtGenomeNode **gn,
                                          NULL, err);
         gt_assert(!rval); /* XXX */
 
+        /* temporarily mirror the encseq */
+        if (!gt_encseq_is_mirrored(tir_stream->encseq)) {
+          had_err = gt_encseq_mirror(tir_stream->encseq, err);
+        }
+        gt_assert(gt_encseq_is_mirrored(tir_stream->encseq));
+
+        tinfo.s = tir_stream;
+        tinfo.err = err;
+        /* seed-extend */
+        if (!had_err && gt_multithread(gt_searchforTIRs_threadfunc,
+                                       &tinfo, err) != 0) {
+          had_err = -1;
+        }
+
+        /* unmirror again */
+        if (gt_encseq_is_mirrored(tir_stream->encseq)) {
+          gt_encseq_unmirror(tir_stream->encseq);
+        }
+        gt_assert(!gt_encseq_is_mirrored(tir_stream->encseq));
+
+        gt_log_log("%lu seeds processed",
+                   tir_stream->seedinfo.seed.nextfreeSeed);
+
+        /* reset seed array */
+        tir_stream->seedinfo.seed.nextfreeSeed = 0;
+
+        /* process next block */
+        startpos = endpos + 1;
       }
-      /* XXX: process last portion */
     }
 
-    exit(0);   /* XXX */
+    gt_free(buf);
+    gt_free(rbuf);
 
-    /* if (!had_err && gt_enumeratemaxpairs(tir_stream->ssar,
-                      tir_stream->encseq,
-                      gt_readmodeSequentialsuffixarrayreader(tir_stream->ssar),
-                      (unsigned int) tir_stream->min_seed_length,
-                      gt_tir_store_seeds,
-                      &tir_stream->seedinfo,
-                      err) != 0) {
-      had_err = -1;
-    }*/
-
-
-
-
-    tinfo.s = tir_stream;
-    tinfo.err = err;
-    /* run compute-expensive jobs */
-    if (!had_err && gt_multithread(gt_searchforTIRs_threadfunc,
-                                   &tinfo, err) != 0) {
-      had_err = -1;
-    }
+    gt_log_log("%lu extended pairs",
+                   tir_stream->first_pairs.nextfreeTIRPair);
 
     /* sort results after seed extension */
     if (!had_err && tir_stream->first_pairs.spaceTIRPair) {
@@ -771,6 +788,8 @@ static int gt_tir_stream_next(GtNodeStream *ns, GT_UNUSED GtGenomeNode **gn,
     /* remove skipped candidates */
     tir_stream->tir_pairs = tir_compactboundaries(&tir_stream->num_of_tirs,
                                                   &tir_stream->first_pairs);
+
+   gt_log_log("%lu final pairs", tir_stream->num_of_tirs);
 
     GT_FREEARRAY(&tir_stream->seedinfo.seed, Seed);
     tir_stream->state = GT_TIR_STREAM_STATE_REGIONS;
@@ -1029,10 +1048,9 @@ static void gt_tir_stream_free(GtNodeStream *ns)
   GtTIRStream *tir_stream = gt_node_stream_cast(gt_tir_stream_class(), ns);
   GT_FREEARRAY(&tir_stream->first_pairs, TIRPair);
   gt_str_delete(tir_stream->str_indexname);
+  gt_encseq_delete(tir_stream->encseq);
   gt_mutex_delete(tir_stream->rmutex);
   gt_mutex_delete(tir_stream->wmutex);
-  if (tir_stream->ssar != NULL)
-    gt_freeSequentialsuffixarrayreader(&tir_stream->ssar);
   if (tir_stream->tir_pairs != NULL)
     gt_free(tir_stream->tir_pairs);
 }
@@ -1062,11 +1080,21 @@ GtNodeStream* gt_tir_stream_new(GtStr *str_indexname,
                                 GtUword min_TSD_length,
                                 GtUword max_TSD_length,
                                 GtUword vicinity,
+                                GtUword blocksize,
                                 GtError *err)
 {
-  int had_err = 0;
   GtNodeStream *ns = gt_node_stream_create(gt_tir_stream_class(), false);
   GtTIRStream *tir_stream = gt_node_stream_cast(gt_tir_stream_class(), ns);
+  GtEncseqLoader *el = gt_encseq_loader_new();
+
+  tir_stream->encseq = gt_encseq_loader_load(el,
+                                             gt_str_get(str_indexname), err);
+  gt_encseq_loader_delete(el);
+  if (!tir_stream->encseq) {
+    gt_node_stream_delete(ns);
+    return NULL;
+  }
+
   tir_stream->num_of_tirs = 0;
   tir_stream->tir_pairs = NULL;
   tir_stream->cur_elem_index = 0;
@@ -1087,6 +1115,7 @@ GtNodeStream* gt_tir_stream_new(GtStr *str_indexname,
   tir_stream->min_TSD_length = min_TSD_length;
   tir_stream->max_TSD_length = max_TSD_length;
   tir_stream->vicinity = vicinity;
+  tir_stream->blocksize = blocksize;
 
   tir_stream->rmutex = gt_mutex_new();
   tir_stream->wmutex = gt_mutex_new();
@@ -1096,25 +1125,6 @@ GtNodeStream* gt_tir_stream_new(GtStr *str_indexname,
   tir_stream->seedinfo.max_tir_distance = max_TIR_distance;
   tir_stream->seedinfo.min_tir_distance = min_TIR_distance;
 
-  tir_stream->ssar =
-      gt_newSequentialsuffixarrayreaderfromfile(gt_str_get(str_indexname),
-                                              /*  SARR_LCPTAB | SARR_SUFTAB | */
-                                                SARR_ESQTAB | SARR_DESTAB |
-                                                SARR_SSPTAB | SARR_SDSTAB,
-                                                SEQ_scan,
-                                                NULL,
-                                                err);
-  if (tir_stream->ssar == NULL) {
-    gt_node_stream_delete(ns);
-    return NULL;
-  }
-  tir_stream->encseq = gt_encseqSequentialsuffixarrayreader(tir_stream->ssar);
-  /* if (!gt_encseq_is_mirrored(tir_stream->encseq)) {
-    gt_error_set(err, "index for '%s' is not mirrored (suffixerator option "
-                      "-mirrored)!", gt_str_get(str_indexname));
-    gt_node_stream_delete(ns);
-    return NULL;
-  }*/
   GT_INITARRAY(&tir_stream->seedinfo.seed, Seed);
   GT_INITARRAY(&tir_stream->first_pairs, TIRPair);
   tir_stream->seedinfo.num_of_contigs =
@@ -1124,10 +1134,7 @@ GtNodeStream* gt_tir_stream_new(GtStr *str_indexname,
   tir_stream->seedinfo.midpos =
                            (gt_encseq_total_length(tir_stream->encseq) - 1) / 2;
 
-  if (!had_err)
-    return ns;
-
-  return NULL;
+  return ns;
 }
 
 const GtEncseq* gt_tir_stream_get_encseq(GtTIRStream *ts)
