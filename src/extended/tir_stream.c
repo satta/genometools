@@ -191,6 +191,8 @@ static int gt_tir_store_seeds(void *info,
   nextfreeseedpointer->offset = distance;
   nextfreeseedpointer->len = len;
   nextfreeseedpointer->contignumber = si->curseqnum;
+
+  //gt_log_log("seeds: %lu", si->seed.nextfreeSeed);
   return 0;
 }
 
@@ -411,6 +413,11 @@ static int gt_tir_search_for_TSDs(GtTIRStream *tir_stream, TIRPair *tir_pair,
   int had_err = 0;
   gt_error_check(err);
 
+gt_log_log("search TSD in pair [%lu,%lu] [%lu,%lu]/[%lu,%lu]", tir_pair->left_tir_start, tir_pair->left_tir_end,
+                                                 tir_pair->right_tir_start, tir_pair->right_tir_end,
+                                                 tir_pair->right_transformed_start, tir_pair->right_transformed_end);
+
+
   /* check vicinity for left tir start */
   seq_start_pos1 = gt_encseq_seqstartpos(encseq, contignumber);
   seq_length = gt_encseq_seqlength(encseq, contignumber);
@@ -455,6 +462,22 @@ static int gt_tir_search_for_TSDs(GtTIRStream *tir_stream, TIRPair *tir_pair,
                               start_left_tir, end_left_tir);
     gt_encseq_extract_encoded(encseq, query,
                               start_right_tir, end_right_tir);
+
+
+
+    gt_mutex_lock(tir_stream->wmutex);
+    GT_UNUSED char buf[BUFSIZ];
+    buf[tir_pair->left_tir_end - tir_pair->left_tir_start] = '\0';
+    gt_encseq_extract_decoded(tir_stream->encseq, buf,
+                              tir_pair->left_tir_start, tir_pair->left_tir_end);
+    printf("%s ", buf);
+    gt_encseq_extract_decoded(tir_stream->encseq, buf,
+                             tir_pair->right_transformed_start, tir_pair->right_transformed_end);
+    buf[tir_pair->right_transformed_end - tir_pair->right_transformed_start] = '\0';
+    printf("%s\n", buf);
+    gt_mutex_unlock(tir_stream->wmutex);
+
+
 
     GT_INITARRAY(&info.TSDs, Seed);
     gt_assert(start_left_tir < start_right_tir);
@@ -606,14 +629,7 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
       xdropbest_right.score = 0;
     }
 
-    /* re-check length constraints */
-    if (seedptr->pos1 + seedptr->len - 1 + xdropbest_right.ivalue -
-        mirpos2 - xdropbest_left.jvalue + 1 < tir_stream->min_TIR_length
-        || seedptr->pos1 + seedptr->len - 1 + xdropbest_right.ivalue -
-        mirpos2 - xdropbest_left.jvalue + 1 < tir_stream->min_TIR_length)
-      continue;
-
-    /* store positions for the found TIR */
+      /* store positions for the found TIR */
     pair.contignumber = seedptr->contignumber;
     pair.tsd_length = 0;
     pair.left_tir_start = seedptr->pos1 - xdropbest_left.ivalue;
@@ -630,7 +646,7 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
     pair.skip = false;
 
     /* TSDs */
-    //gt_tir_search_for_TSDs(tir_stream, &pair, encseq, err);
+    gt_tir_search_for_TSDs(tir_stream, &pair, encseq, err);
 
     /* determine and filter by similarity */
     ulen = pair.left_tir_end - pair.left_tir_start + 1;
@@ -646,7 +662,12 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
       *pairp = pair;
       added++;
       gt_mutex_unlock(tir_stream->wmutex);
-    } else skipped++;
+    } else {
+      if (pair.skip) gt_log_log("skipped: skip was set");
+      if (gt_double_smaller_double(pair.similarity,
+                           tir_stream->similarity_threshold)) gt_log_log("skipped: sim was %f", pair.similarity);
+      skipped++;
+    }
   }
 
   gt_mutex_lock(tir_stream->wmutex);
