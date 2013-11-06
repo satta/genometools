@@ -413,9 +413,28 @@ static int gt_tir_search_for_TSDs(GtTIRStream *tir_stream, TIRPair *tir_pair,
   int had_err = 0;
   gt_error_check(err);
 
-gt_log_log("search TSD in pair [%lu,%lu] [%lu,%lu]/[%lu,%lu]", tir_pair->left_tir_start, tir_pair->left_tir_end,
-                                                 tir_pair->right_tir_start, tir_pair->right_tir_end,
-                                                 tir_pair->right_transformed_start, tir_pair->right_transformed_end);
+          gt_log_log("search TSD in pair [%lu,%lu] [%lu,%lu]/[%lu,%lu]", tir_pair->left_tir_start, tir_pair->left_tir_end,
+                                                     tir_pair->right_tir_start, tir_pair->right_tir_end,
+                                                     tir_pair->right_transformed_start, tir_pair->right_transformed_end);
+
+
+
+           gt_mutex_lock(tir_stream->wmutex);
+          GT_UNUSED char buf[BUFSIZ];
+          gt_encseq_extract_decoded(tir_stream->encseq, buf,
+                                    tir_pair->left_tir_start, tir_pair->left_tir_end);
+          buf[tir_pair->left_tir_end - tir_pair->left_tir_start] = '\0';
+          gt_log_log("%s ", buf);
+          gt_encseq_extract_decoded(tir_stream->encseq, buf,
+                                   tir_pair->right_transformed_start, tir_pair->right_transformed_end);
+          buf[tir_pair->right_transformed_end - tir_pair->right_transformed_start] = '\0';
+          gt_log_log("%s", buf);
+          gt_encseq_extract_decoded(tir_stream->encseq, buf,
+                                   tir_pair->right_tir_start, tir_pair->right_tir_end);
+          buf[tir_pair->right_tir_end - tir_pair->right_tir_start] = '\0';
+          gt_log_log("%s", buf);
+          gt_mutex_unlock(tir_stream->wmutex);
+
 
 
   /* check vicinity for left tir start */
@@ -462,22 +481,6 @@ gt_log_log("search TSD in pair [%lu,%lu] [%lu,%lu]/[%lu,%lu]", tir_pair->left_ti
                               start_left_tir, end_left_tir);
     gt_encseq_extract_encoded(encseq, query,
                               start_right_tir, end_right_tir);
-
-
-
-    gt_mutex_lock(tir_stream->wmutex);
-    GT_UNUSED char buf[BUFSIZ];
-    buf[tir_pair->left_tir_end - tir_pair->left_tir_start] = '\0';
-    gt_encseq_extract_decoded(tir_stream->encseq, buf,
-                              tir_pair->left_tir_start, tir_pair->left_tir_end);
-    printf("%s ", buf);
-    gt_encseq_extract_decoded(tir_stream->encseq, buf,
-                             tir_pair->right_transformed_start, tir_pair->right_transformed_end);
-    buf[tir_pair->right_transformed_end - tir_pair->right_transformed_start] = '\0';
-    printf("%s\n", buf);
-    gt_mutex_unlock(tir_stream->wmutex);
-
-
 
     GT_INITARRAY(&info.TSDs, Seed);
     gt_assert(start_left_tir < start_right_tir);
@@ -729,7 +732,7 @@ static int gt_tir_stream_next(GtNodeStream *ns, GtGenomeNode **gn,
         gt_log_log("endpos1: %lu", startpos + length);
         gt_log_log("endpos2: %lu", seqstartpos +
                               gt_encseq_seqlength(tir_stream->encseq, seqno)-1);
-        endpos = MIN(startpos + length,
+        endpos = MIN(startpos + length - 1,
                 seqstartpos + gt_encseq_seqlength(tir_stream->encseq, seqno)-1);
         gt_log_log("endpos: %lu", endpos);
         partlen = endpos - startpos + 1;
