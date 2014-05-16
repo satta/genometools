@@ -18,6 +18,10 @@
 #include "core/ma.h"
 #include "core/option_api.h"
 #include "core/output_file_api.h"
+#include "core/seq_iterator_api.h"
+#include "core/seq_iterator_sequence_buffer.h"
+#include "core/str_api.h"
+#include "core/str_array_api.h"
 #include "core/unused_api.h"
 #include "extended/genome_node.h"
 #include "extended/gff3_in_stream.h"
@@ -33,7 +37,7 @@ typedef struct {
   GtSeqid2FileInfo *s2fi;
   GtOutputFileInfo *ofi;
   GtFile *outfp;
-  GtStr *freqfile;
+  GtStr *freqfile, *seqfile;
   unsigned int windowsize;
   double coding_threshold;
   bool all;
@@ -45,6 +49,7 @@ static void* gt_codonusage_scan_arguments_new(void)
   arguments->s2fi = gt_seqid2file_info_new();
   arguments->ofi = gt_output_file_info_new();
   arguments->freqfile = gt_str_new();
+  arguments->seqfile = gt_str_new();
   return arguments;
 }
 
@@ -54,6 +59,7 @@ static void gt_codonusage_scan_arguments_delete(void *tool_arguments)
   if (!arguments) return;
   gt_file_delete(arguments->outfp);
   gt_str_delete(arguments->freqfile);
+  gt_str_delete(arguments->seqfile);
   gt_output_file_info_delete(arguments->ofi);
   gt_seqid2file_info_delete(arguments->s2fi);
   gt_free(arguments);
@@ -88,6 +94,10 @@ static GtOptionParser* gt_codonusage_scan_option_parser_new(void
 
   option = gt_option_new_bool("all", "show all ORFs (i.e. do not filter)",
                                 &arguments->all, false);
+  gt_option_parser_add_option(op, option);
+
+  option = gt_option_new_string("seq", "sequence file name",
+                                arguments->seqfile, "");
   gt_option_parser_add_option(op, option);
 
   /* -seqfile, -matchdesc, -usedesc and -regionmapping */
@@ -138,18 +148,33 @@ static int gt_codonusage_scan_runner(GT_UNUSED int argc, const char **argv,
     if (!nv)
       had_err = -1;
   }
-  if (!had_err) {
-    last_stream = codonusage_scan_stream1 = gt_visitor_stream_new(last_stream,
-                                                                  nv);
-    if (!arguments->all)
-      last_stream = codonusage_scan_stream2 =
-                                    gt_codon_usage_scan_stream_new(last_stream);
 
-    last_stream = gff3_out_stream = gt_gff3_out_stream_new(last_stream,
-                                                           arguments->outfp);
+  if (gt_str_length(arguments->seqfile) > 0) {
+    GtStrArray *sa = gt_str_array_new();
+    const GtUchar *sequence;
+    char *desc;
+    GtUword len;
+    gt_str_array_add(sa, arguments->seqfile);
+    GtSeqIterator *si = gt_seq_iterator_sequence_buffer_new(sa, err);
+    while ((had_err = gt_seq_iterator_next(si, &sequence, &len, &desc, NULL))) {
+      gt_codon_usage_visitor_proc_sequence((GtCodonUsageVisitor*) nv, (const char*) sequence, len, 0);
+    }
+  } else {
 
-    /* pull the features through the stream and free them afterwards */
-    had_err = gt_node_stream_pull(last_stream, err);
+
+    if (!had_err) {
+      last_stream = codonusage_scan_stream1 = gt_visitor_stream_new(last_stream,
+                                                                    nv);
+      if (!arguments->all)
+        last_stream = codonusage_scan_stream2 =
+                                      gt_codon_usage_scan_stream_new(last_stream);
+
+      last_stream = gff3_out_stream = gt_gff3_out_stream_new(last_stream,
+                                                             arguments->outfp);
+
+      /* pull the features through the stream and free them afterwards */
+      had_err = gt_node_stream_pull(last_stream, err);
+    }
   }
 
   /* free */

@@ -238,6 +238,25 @@ static int codon_usage_visitor_read_freqfile(GtCodonUsageVisitor *cuv,
   return had_err;
 }
 
+void           gt_codon_usage_visitor_proc_sequence(GtCodonUsageVisitor *cuv,
+                                                    const char *sequence,
+                                                    GtUword len,
+                                                    GT_UNUSED double coding_threshold)
+{
+  GtUword i = 0, codons;
+  double rvals[3];
+  int had_err = 0;
+
+  codons = (len - cuv->windowsize)/3;
+  for (i = 0; !had_err && i < codons; i++) {
+    had_err = codon_usage_visitor_calc_window(cuv, sequence+(i*3),
+                                              rvals, NULL);
+    printf("%lf %lf %lf\n", rvals[0], rvals[1], rvals[2]);
+    printf("%lf %lf %lf\n", rvals[0], rvals[1], rvals[2]);
+    printf("%lf %lf %lf\n", rvals[0], rvals[1], rvals[2]);
+  }
+}
+
 static inline int codon_usage_visitor_determine_coding_frame(double *val)
 {
   if (val[0] > val[1]) {
@@ -307,14 +326,14 @@ static int codon_usage_visitor_feature_node(GtNodeVisitor *nv,
                  (coding_frame == feature_frame ? "COD" : "   "),
                  val[0], val[1], val[2]);
 
-      snprintf(buf, BUFSIZ, "%d", ((int) (cuv->startpos) % 3));
+      snprintf(buf, BUFSIZ, "feat %d / pred %d", ((int) (cuv->startpos) % 3), (int) feature_frame);
       gt_feature_node_set_attribute(node, "frame", buf);
       snprintf(buf, BUFSIZ, "p0 %lf p1 %lf p2 %lf", val[0], val[1], val[2]);
-      if (coding_frame == feature_frame
-            && MAX3(val[0], val[1], val[2]) > cuv->coding_threshold) {
+    //  if (coding_frame == feature_frame
+    //        && MAX3(val[0], val[1], val[2]) > cuv->coding_threshold) {
         gt_feature_node_set_attribute(node, "results", buf);
         gt_feature_node_set_score(node, MAX3(val[0], val[1], val[2]));
-      }
+    //  }
     }
   }
   gt_feature_node_iterator_delete(fni);

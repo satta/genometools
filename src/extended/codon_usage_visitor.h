@@ -31,4 +31,9 @@ GtNodeVisitor* gt_codon_usage_visitor_new(GtRegionMapping *rm,
                                           double coding_threshold,
                                           GtError *err);
 
+void           gt_codon_usage_visitor_proc_sequence(GtCodonUsageVisitor *cuv,
+                                                    const char *sequence,
+                                                    GtUword len,
+                                                    double coding_threshold);
+
 #endif
