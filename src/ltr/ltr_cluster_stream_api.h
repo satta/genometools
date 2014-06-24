@@ -18,16 +18,16 @@
 #ifndef LTR_CLUSTER_STREAM_API_H
 #define LTR_CLUSTER_STREAM_API_H
 
-#include "core/encseq_api.h"
 #include "core/error_api.h"
 #include "extended/node_stream_api.h"
+#include "extended/region_mapping_api.h"
 
 typedef struct GtLTRClusterStream GtLTRClusterStream;
 
 /* Implements the <GtNodeStream> interface. <GtLTRClusterStream> annotates
    all LTR features with cluster IDs, based on matches. */
 GtNodeStream* gt_ltr_cluster_stream_new(GtNodeStream *in_stream,
-                                        GtEncseq *encseq,
+                                        GtRegionMapping *rm,
                                         int match_score,
                                         int mismatch_cost,
                                         int gap_open_cost,

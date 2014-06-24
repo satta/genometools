@@ -22,23 +22,15 @@
 typedef struct GtLTRClusterPrepareSeqVisitor GtLTRClusterPrepareSeqVisitor;
 
 #include "core/array.h"
-#include "core/encseq.h"
 #include "core/str_array.h"
 #include "extended/node_visitor.h"
+#include "extended/region_mapping_api.h"
 
-const GtNodeVisitorClass* gt_ltr_cluster_prepare_seq_visitor_class(void);
-
-GtNodeVisitor* gt_ltr_cluster_prepare_seq_visitor_new(GtEncseq *encseq,
+GtNodeVisitor* gt_ltr_cluster_prepare_seq_visitor_new(GtRegionMapping *rm,
                                                       GtError *err);
-GtHashmap*      gt_ltr_cluster_prepare_seq_visitor_get_encseqs(
+GtHashmap*     gt_ltr_cluster_prepare_seq_visitor_get_encseqs(
                                               GtLTRClusterPrepareSeqVisitor *v);
-GtStrArray*     gt_ltr_cluster_prepare_seq_visitor_get_features(
+GtStrArray*    gt_ltr_cluster_prepare_seq_visitor_get_features(
                                               GtLTRClusterPrepareSeqVisitor *v);
-
-#define gt_ltr_cluster_prepare_seq_visitor_cast(NV)\
-        gt_node_visitor_cast(gt_ltr_cluster_prepare_seq_visitor_class(), NV)
-
-#define gt_ltr_cluster_prepare_seq_visitor_try_cast(NV)\
-        gt_node_visitor_try_cast(gt_ltr_cluster_prepare_seq_visitor_class(), NV)
 
 #endif

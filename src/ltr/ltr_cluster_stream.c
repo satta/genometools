@@ -49,8 +49,8 @@ struct GtLTRClusterStream {
   GtStrArray *feat_to_encseq_keys;
   bool first_next;
   GtUword psmall,
-                plarge,
-                next_index;
+          plarge,
+          next_index;
   int match_score, mismatch_cost, gap_open_cost,
       gap_ext_cost, xdrop, ydrop, zdrop, mscoregapped,
       mscoregapless, k;
@@ -559,7 +559,7 @@ const GtNodeStreamClass* gt_ltr_cluster_stream_class(void)
 }
 
 GtNodeStream* gt_ltr_cluster_stream_new(GtNodeStream *in_stream,
-                                        GtEncseq *encseq,
+                                        GtRegionMapping *rm,
                                         int match_score,
                                         int mismatch_cost,
                                         int gap_open_cost,
@@ -583,8 +583,8 @@ GtNodeStream* gt_ltr_cluster_stream_new(GtNodeStream *in_stream,
   lcs->feat_to_encseq = NULL;
   lcs->feat_to_encseq_keys = NULL;
   lcs->nodes = gt_array_new(sizeof(GtGenomeNode*));
-  lcs->lcv = gt_ltr_cluster_prepare_seq_visitor_cast(
-                           gt_ltr_cluster_prepare_seq_visitor_new(encseq, err));
+  lcs->lcv = (GtLTRClusterPrepareSeqVisitor*)
+                                gt_ltr_cluster_prepare_seq_visitor_new(rm, err);
   lcs->first_next = true;
   lcs->next_index = 0;
   lcs->match_score = match_score;

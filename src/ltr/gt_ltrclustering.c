@@ -1,5 +1,6 @@
 /*
   Copyright (c) 2011 Sascha Kastens <mail@skastens.de>
+  Copyright (c) 2014 Sascha Steinbiss <sascha@steinbiss.name>
   Copyright (c) 2011 Center for Bioinformatics, University of Hamburg
 
   Permission to use, copy, modify, and distribute this software for any
@@ -22,6 +23,7 @@
 #include "core/unused_api.h"
 #include "extended/gff3_in_stream.h"
 #include "extended/gff3_out_stream_api.h"
+#include "extended/seqid2file.h"
 #include "ltr/ltr_cluster_stream.h"
 #include "ltr/ltr_classify_stream.h"
 #include "ltr/gt_ltrclustering.h"
@@ -29,12 +31,11 @@
 typedef struct {
   GtFile *outfp;
   GtOutputFileInfo *ofi;
-  GtStr  *file_prefix;
-  GtUword psmall,
-                plarge;
-  double xdrop,
-         identity;
+  GtUword psmall, plarge;
+  double xdrop, identity;
   int wordsize;
+  GtStrArray *feats;
+  GtSeqid2FileInfo *s2fi;
 } GtLTRClusteringArguments;
 
 static void* gt_ltrclustering_arguments_new(void)
@@ -42,7 +43,8 @@ static void* gt_ltrclustering_arguments_new(void)
   GtLTRClusteringArguments *arguments = gt_calloc((size_t) 1,
                                                   sizeof (*arguments));
   arguments->ofi = gt_output_file_info_new();
-  arguments->file_prefix = gt_str_new();
+  arguments->s2fi = gt_seqid2file_info_new();
+  arguments->feats = gt_str_array_new();
   return arguments;
 }
 
@@ -50,8 +52,9 @@ static void gt_ltrclustering_arguments_delete(void *tool_arguments)
 {
   GtLTRClusteringArguments *arguments = tool_arguments;
   if (!arguments) return;
-  gt_str_delete(arguments->file_prefix);
   gt_file_delete(arguments->outfp);
+  gt_str_array_delete(arguments->feats);
+  gt_seqid2file_info_delete(arguments->s2fi);
   gt_output_file_info_delete(arguments->ofi);
   gt_free(arguments);
 }
@@ -64,33 +67,38 @@ static GtOptionParser* gt_ltrclustering_option_parser_new(void *tool_arguments)
   gt_assert(arguments);
 
   /* init */
-  op = gt_option_parser_new("[option ...] indexname [GFF3_file ...]",
+  op = gt_option_parser_new("[option...] [GFF3_file ...]",
                             "Cluster features of LTRs.");
 
   /* -psmall */
-  option = gt_option_new_uword_min_max("psmall", "specify how many percent of"
+  option = gt_option_new_uword_min_max("psmall", "percentage of"
                                        " the smaller sequence a match needs to"
                                        " cover in order to cluster the two"
-                                       " sequences of the match.",
+                                       " sequences of the match",
                                        &arguments->psmall, 0, 0, 100UL);
 
   gt_option_is_mandatory(option);
   gt_option_parser_add_option(op, option);
 
   /* -plarge */
-  option = gt_option_new_uword_min_max("plarge", "specify how many percent of"
+  option = gt_option_new_uword_min_max("plarge", "percentage of"
                                        " the larger sequence a match needs to"
                                        " cover in order to cluster the two"
-                                       " sequences of the match.",
+                                       " sequences of the match",
                                        &arguments->plarge, 0, 0, 100UL);
   gt_option_is_mandatory(option);
   gt_option_parser_add_option(op, option);
-
   gt_option_is_mandatory(option);
 
-  gt_output_file_info_register_options(arguments->ofi, op, &arguments->outfp);
+  /* -usefeatures */
+  option = gt_option_new_string_array("usefeatures", "list of features used "
+                                      "for classification (e.g. lLTR, rLTR, "
+                                      "etc.), terminate with '--'",
+                                      arguments->feats);
+  gt_option_parser_add_option(op, option);
 
-  gt_option_parser_set_min_args(op, 1U);
+  gt_seqid2file_register_options(op, arguments->s2fi);
+  gt_output_file_info_register_options(arguments->ofi, op, &arguments->outfp);
 
   return op;
 }
@@ -105,51 +113,55 @@ static int gt_ltrclustering_runner(int argc, const char **argv,
                *ltr_cluster_stream  = NULL,
                *ltr_classify_stream = NULL,
                *gff3_out_stream     = NULL;
-  GtEncseqLoader *el;
-  GtEncseq *encseq;
+  GtRegionMapping *rm;
   int had_err = 0, arg = parsed_args;
-  const char *indexname = argv[arg];
-
   gt_error_check(err);
   gt_assert(arguments);
   arg++;
 
-  el = gt_encseq_loader_new();
-  encseq = gt_encseq_loader_load(el, indexname, err);
+  /* add region mapping if given */
+  if (gt_seqid2file_option_used(arguments->s2fi)) {
+    rm = gt_seqid2file_region_mapping_new(arguments->s2fi, err);
+    if (!rm)
+      had_err = -1;
+  }
 
-  if (!encseq)
-    had_err = -1;
   if (!had_err) {
     last_stream = gff3_in_stream = gt_gff3_in_stream_new_unsorted(argc - arg,
                                                                   argv + arg);
+    gt_assert(gff3_in_stream);
     last_stream = ltr_cluster_stream = gt_ltr_cluster_stream_new(last_stream,
-                                                         encseq,
-                                                         GT_UNDEF_INT,
-                                                         GT_UNDEF_INT,
-                                                         GT_UNDEF_INT,
-                                                         GT_UNDEF_INT,
-                                                         GT_UNDEF_INT,
-                                                         GT_UNDEF_INT,
-                                                         GT_UNDEF_INT,
-                                                         10,
-                                                         GT_UNDEF_INT,
-                                                         GT_UNDEF_INT,
-                                                         arguments->plarge,
-                                                         arguments->psmall,
-                                                         NULL,
-                                                         err);
+                                                             rm,
+                                                             GT_UNDEF_INT,
+                                                             GT_UNDEF_INT,
+                                                             GT_UNDEF_INT,
+                                                             GT_UNDEF_INT,
+                                                             GT_UNDEF_INT,
+                                                             GT_UNDEF_INT,
+                                                             GT_UNDEF_INT,
+                                                             10,
+                                                             GT_UNDEF_INT,
+                                                             GT_UNDEF_INT,
+                                                             arguments->plarge,
+                                                             arguments->psmall,
+                                                             NULL,
+                                                             err);
+    if (!ltr_cluster_stream)
+      had_err = -1;
+  }
+  if (!had_err) {
     last_stream = ltr_classify_stream = gt_ltr_classify_stream_new(last_stream,
                                                                    NULL,
                                                                    NULL,
                                                                    NULL,
                                                                    NULL,
                                                                    err);
-
     if (!ltr_classify_stream)
       had_err = -1;
-    else
+  }
+  if (!had_err) {
       last_stream = gff3_out_stream = gt_gff3_out_stream_new(last_stream,
-                                                          arguments->outfp);
+                                                             arguments->outfp);
   }
   if (!had_err)
     had_err = gt_node_stream_pull(last_stream, err);
@@ -158,8 +170,7 @@ static int gt_ltrclustering_runner(int argc, const char **argv,
   gt_node_stream_delete(ltr_cluster_stream);
   gt_node_stream_delete(gff3_in_stream);
   gt_node_stream_delete(gff3_out_stream);
-  gt_encseq_loader_delete(el);
-  gt_encseq_delete(encseq);
+  gt_region_mapping_delete(rm);
 
   return had_err;
 }

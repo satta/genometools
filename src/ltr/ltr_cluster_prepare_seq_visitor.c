@@ -1,6 +1,6 @@
 /*
-  Copyright (c) 2012 Sascha Steinbiss <steinbiss@zbh.uni-hamburg.de>
-  Copyright (c) 2012 Center for Bioinformatics, University of Hamburg
+  Copyright (c) 2012-2014 Sascha Steinbiss <sascha@steinbiss.name>
+  Copyright (c) 2012      Center for Bioinformatics, University of Hamburg
 
   Permission to use, copy, modify, and distribute this software for any
   purpose with or without fee is hereby granted, provided that the above
@@ -22,8 +22,11 @@
 #include "core/encseq_api.h"
 #include "core/hashmap.h"
 #include "core/log.h"
+#include "core/ma.h"
 #include "core/str_api.h"
 #include "core/str_array.h"
+#include "core/unused_api.h"
+#include "extended/extract_feature_sequence.h"
 #include "extended/feature_node.h"
 #include "extended/feature_node_iterator_api.h"
 #include "extended/feature_type.h"
@@ -32,38 +35,32 @@
 
 struct GtLTRClusterPrepareSeqVisitor {
   const GtNodeVisitor parent_instance;
-  GtEncseq *src_encseq;
+  GtRegionMapping *rm;
   GtHashmap *feat_to_encseq,
             *encseq_builders;
   GtStrArray *feat_to_encseq_keys;
+  GtAlphabet *a;
 };
 
+const GtNodeVisitorClass* gt_ltr_cluster_prepare_seq_visitor_class(void);
+
+#define gt_ltr_cluster_prepare_seq_visitor_cast(NV)\
+        gt_node_visitor_cast(gt_ltr_cluster_prepare_seq_visitor_class(), NV)
+
+#define gt_ltr_cluster_prepare_seq_visitor_try_cast(NV)\
+        gt_node_visitor_try_cast(gt_ltr_cluster_prepare_seq_visitor_class(), NV)
+
 static int extract_feature_seq(GtEncseqBuilder *b, const char *header,
-                               GtStr *seqid, GtEncseq *encseq, GtRange range,
-                               GT_UNUSED const char *fnt, GtError *err)
+                               GtRegionMapping *rm, GtGenomeNode *gn,
+                               const char *fnt, GtError *err)
 {
-  char *buffer;
   int had_err = 0;
-  GtUword seqnum,
-                startpos;
+  GtStr *str = gt_str_new(); /* XXX reuse */
 
-  (void) sscanf(gt_str_get(seqid), "seq"GT_WU"", &seqnum);
-  if (seqnum >= gt_encseq_num_of_sequences(encseq)) {
-    gt_error_set(err, "annotation encountered for sequence "GT_WU", but the "
-                      "supplied encoded sequence only contains sequences "
-                      "0-"GT_WU"", seqnum,
-                    gt_encseq_num_of_sequences(encseq)-1);
-    had_err = -1;
-  }
-
-  if (!had_err) {
-    buffer = gt_calloc((size_t) gt_range_length(&range) + 1, sizeof (char));
-    startpos = gt_encseq_seqstartpos(encseq, seqnum);
-    gt_encseq_extract_decoded(encseq, buffer, startpos + range.start,
-                              startpos + range.end);
-    gt_encseq_builder_add_cstr(b, buffer, gt_range_length(&range), header);
-    gt_free(buffer);
-  }
+  had_err = gt_extract_feature_sequence(str, gn, fnt, false, NULL, NULL, rm,
+                                        err);
+  gt_encseq_builder_add_cstr(b, gt_str_get(str), gt_str_length(str), header);
+  gt_str_delete(str);
 
   return had_err;
 }
@@ -76,6 +73,7 @@ static int gt_ltr_cluster_prepare_seq_visitor_feature_node(GtNodeVisitor *nv,
   GtFeatureNode *curnode;
   GtFeatureNodeIterator *fni;
   GtStr *seqid = NULL;
+
   const char *fnt;
   char buffer[BUFSIZ];
   int had_err = 0;
@@ -109,7 +107,7 @@ static int gt_ltr_cluster_prepare_seq_visitor_feature_node(GtNodeVisitor *nv,
       (void) snprintf(header, BUFSIZ, "%s_"GT_WU"_"GT_WU"", buffer, range.start,
                       range.end);
       if (!gt_hashmap_get(lcv->encseq_builders, attr)) {
-        eb = gt_encseq_builder_new(gt_encseq_alphabet(lcv->src_encseq));
+        eb = gt_encseq_builder_new(lcv->a);
         gt_encseq_builder_create_ssp_tab(eb);
         gt_encseq_builder_create_sds_tab(eb);
         gt_encseq_builder_create_des_tab(eb);
@@ -120,8 +118,8 @@ static int gt_ltr_cluster_prepare_seq_visitor_feature_node(GtNodeVisitor *nv,
       } else {
         eb = (GtEncseqBuilder*) gt_hashmap_get(lcv->encseq_builders, attr);
       }
-      had_err = extract_feature_seq(eb, header, seqid, lcv->src_encseq, range,
-                                    fnt, err);
+      had_err = extract_feature_seq(eb, header, lcv->rm,
+                                    (GtGenomeNode*) curnode, fnt, err);
       gt_file_delete(file);
     } else if (strcmp(fnt, gt_ft_LTR_retrotransposon) == 0)
       continue;
@@ -146,7 +144,7 @@ static int gt_ltr_cluster_prepare_seq_visitor_feature_node(GtNodeVisitor *nv,
       (void) snprintf(header, BUFSIZ, "%s_"GT_WU"_"GT_WU"", buffer, range.start,
                       range.end);
       if (!gt_hashmap_get(lcv->encseq_builders, tmp)) {
-        eb = gt_encseq_builder_new(gt_encseq_alphabet(lcv->src_encseq));
+        eb = gt_encseq_builder_new(lcv->a);
         gt_encseq_builder_create_ssp_tab(eb);
         gt_encseq_builder_create_sds_tab(eb);
         gt_encseq_builder_create_des_tab(eb);
@@ -156,8 +154,8 @@ static int gt_ltr_cluster_prepare_seq_visitor_feature_node(GtNodeVisitor *nv,
       } else {
         eb = (GtEncseqBuilder*) gt_hashmap_get(lcv->encseq_builders, tmp);
       }
-      had_err = extract_feature_seq(eb, header, seqid, lcv->src_encseq, range,
-                                    fnt, err);
+      had_err = extract_feature_seq(eb, header, lcv->rm,
+                                    (GtGenomeNode*) curnode, fnt, err);
       gt_free(tmp);
       gt_file_delete(file);
     }
@@ -171,10 +169,11 @@ void gt_ltr_cluster_prepare_seq_visitor_free(GtNodeVisitor *v)
 {
   GtLTRClusterPrepareSeqVisitor *lcv;
   lcv = gt_ltr_cluster_prepare_seq_visitor_cast(v);
-  gt_encseq_delete(lcv->src_encseq);
+  gt_region_mapping_delete(lcv->rm);
   gt_str_array_delete(lcv->feat_to_encseq_keys);
   gt_hashmap_delete(lcv->feat_to_encseq);
   gt_hashmap_delete(lcv->encseq_builders);
+  gt_alphabet_delete(lcv->a);
 }
 
 const GtNodeVisitorClass* gt_ltr_cluster_prepare_seq_visitor_class(void)
@@ -194,7 +193,7 @@ const GtNodeVisitorClass* gt_ltr_cluster_prepare_seq_visitor_class(void)
   return nvc;
 }
 
-GtNodeVisitor* gt_ltr_cluster_prepare_seq_visitor_new(GtEncseq *encseq,
+GtNodeVisitor* gt_ltr_cluster_prepare_seq_visitor_new(GtRegionMapping *rm,
                                                       GT_UNUSED GtError *err)
 {
   GtNodeVisitor *nv;
@@ -202,8 +201,9 @@ GtNodeVisitor* gt_ltr_cluster_prepare_seq_visitor_new(GtEncseq *encseq,
   nv = gt_node_visitor_create(gt_ltr_cluster_prepare_seq_visitor_class());
   lcv = gt_ltr_cluster_prepare_seq_visitor_cast(nv);
   gt_assert(lcv);
-  lcv->src_encseq = gt_encseq_ref(encseq);
+  lcv->rm = gt_region_mapping_ref(rm);
   lcv->feat_to_encseq = NULL;
+  lcv->a = gt_alphabet_new_dna();
   lcv->encseq_builders = gt_hashmap_new(GT_HASH_STRING, gt_free_func,
                                         (GtFree) gt_encseq_builder_delete);
   lcv->feat_to_encseq_keys = gt_str_array_new();
