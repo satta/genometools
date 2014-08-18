@@ -1,7 +1,7 @@
 /*
   Copyright (c) 2011      Sascha Kastens <mail@skastens.de>
-  Copyright (c)      2012 Sascha Steinbiss <steinbiss@zbh.uni-hamburg.de>
-  Copyright (c) 2011-2012 Center for Bioinformatics, University of Hamburg
+  Copyright (c) 2012-2014 Sascha Steinbiss <sascha@steinbiss.name>
+  Copyright (c) 2011-2013 Center for Bioinformatics, University of Hamburg
 
   Permission to use, copy, modify, and distribute this software for any
   purpose with or without fee is hereby granted, provided that the above
@@ -23,6 +23,7 @@
 #include "core/hashmap.h"
 #include "core/log.h"
 #include "core/ma.h"
+#include "core/qsort_r_api.h"
 #include "core/str_array.h"
 #include "core/undef_api.h"
 #include "core/unused_api.h"
@@ -45,7 +46,9 @@ struct GtLTRClusterStream {
   GtNodeStream *in_stream;
   GtLTRClusterPrepareSeqVisitor *lcv;
   GtArray *nodes;
-  GtHashmap *feat_to_encseq;
+  GtHashmap *feat_to_encseq,
+            *feat_to_id,
+            *id_to_feat;
   GtStrArray *feat_to_encseq_keys;
   bool first_next;
   GtUword psmall,
@@ -77,21 +80,22 @@ typedef struct GtMatchEdgeTable {
 } GtMatchEdgeTable;
 
 #define STORECLUSTEREDGEG(I, J, VALUE)\
-matchedge.matchnum0 = I;\
-matchedge.matchnum1 = J;\
-matchedge.gap_size = VALUE;\
-gt_array_add(matchedgetab.edges, matchedge);\
-matchedgetab.num_of_edges++
+  matchedge.matchnum0 = I;\
+  matchedge.matchnum1 = J;\
+  matchedge.gap_size = VALUE;\
+  gt_array_add(matchedgetab.edges, matchedge);\
+  matchedgetab.num_of_edges++
 
 #define STORECLUSTEREDGEED(I, J, ML, ED)\
-matchedge.matchnum0 = I;\
-matchedge.matchnum1 = J;\
-matchedge.minlength = ML;\
-matchedge.edist = ED;\
-gt_array_add(matchedgetab.edges, matchedge);\
-matchedgetab.num_of_edges++
+  matchedge.matchnum0 = I;\
+  matchedge.matchnum1 = J;\
+  matchedge.minlength = ML;\
+  matchedge.edist = ED;\
+  gt_array_add(matchedgetab.edges, matchedge);\
+  matchedgetab.num_of_edges++
 
-static int cmpmatchreferences(const void *dataA, const void *dataB)
+static int cmpmatchreferences(const void *dataA, const void *dataB,
+                              GT_UNUSED void* data)
 {
   GtMatchReference *mrefA = (GtMatchReference*) dataA;
   GtMatchReference *mrefB = (GtMatchReference*) dataB;
@@ -119,9 +123,10 @@ static GtMatchReference* gt_mirror_and_sort_matches(GtArray *matches)
     mref[j+1].startpos = rng_seq2.start;
     mref[j+1].matchnum = i;
   }
-  qsort (mref,
+  gt_qsort_r(mref,
          (size_t) (2 * gt_array_size(matches)),
          sizeof (GtMatchReference),
+         NULL,
          cmpmatchreferences);
   return mref;
 }
@@ -157,13 +162,13 @@ static int cluster_sequences(GtArray *matches,
           rng_seq2;
   int had_err = 0;
   GtUword i,
-                lsmall,
-                llarge,
-                matchlen1,
-                matchlen2,
-                num_of_seq,
-                seqnum1 = 0,
-                seqnum2 = 0;
+          lsmall,
+          llarge,
+          matchlen1,
+          matchlen2,
+          num_of_seq,
+          seqnum1 = 0,
+          seqnum2 = 0;
   const char *seqid;
 
   num_of_seq = gt_encseq_num_of_sequences(encseq);
@@ -172,8 +177,8 @@ static int cluster_sequences(GtArray *matches,
   if (gt_clustered_set_num_of_elements(cs, err) != num_of_seq) {
     had_err = -1;
     gt_error_set(err,
-                 "number of sequences ("GT_WU") unequals number of elements in"
-                 " clustered set ("GT_WU")",
+                 "number of sequences ("GT_WU") is not equal to number of "
+                 "elements in clustered set ("GT_WU")",
                  num_of_seq, gt_clustered_set_num_of_elements(cs, err));
   }
   if (!had_err) {
@@ -246,9 +251,9 @@ GT_UNUSED static int gt_cluster_matches_gap(GtArray *matches,
   GtMatch *match;
   GtRange range;
   GtUword i,
-                j,
-                gap_size = 0,
-                length = 0;
+          j,
+          gap_size = 0,
+          length = 0;
   GtUword num_of_matches;
   int had_err = 0;
 
@@ -295,7 +300,7 @@ static void free_hash(void *elem)
 
 static int cluster_annotate_nodes(GtClusteredSet *cs, GtEncseq *encseq,
                                   const char *feature, GtArray *nodes,
-                                  GtError *err)
+                                  GtLTRClusterStream *s, GtError *err)
 {
   GtFeatureNodeIterator *fni;
   GtFeatureNode *curnode = NULL, *tmp;
@@ -309,70 +314,25 @@ static int cluster_annotate_nodes(GtClusteredSet *cs, GtEncseq *encseq,
   char buffer[BUFSIZ], *real_feature;
   gt_error_check(err);
 
-  if ((strcmp(feature, "lLTR") == 0) || (strcmp(feature, "rLTR") == 0))
-    real_feature = gt_cstr_dup(gt_ft_long_terminal_repeat);
-  else
-    real_feature = gt_cstr_dup(feature);
-
-  desc2node = gt_hashmap_new(GT_HASH_STRING, free_hash, NULL);
-  for (i = 0; i < gt_array_size(nodes); i++) {
-    gn = *(GtGenomeNode**) gt_array_get(nodes, i);
-    if (gt_feature_node_try_cast(gn) == NULL)
-      continue;
-    fni = gt_feature_node_iterator_new((GtFeatureNode*) gn);
-    while ((curnode = gt_feature_node_iterator_next(fni)) != NULL) {
-      char header[BUFSIZ];
-      fnt = gt_feature_node_get_type(curnode);
-      if (strcmp(fnt, gt_ft_repeat_region) == 0) {
-        const char *rid;
-        GtUword id;
-        seqid = gt_genome_node_get_seqid((GtGenomeNode*) curnode);
-        rid = gt_feature_node_get_attribute(curnode, "ID");
-        (void) sscanf(rid, "repeat_region"GT_WU"", &id);
-        (void) snprintf(buffer, BUFSIZ, "%s_"GT_WU"", gt_str_get(seqid), id);
-      } else if (strcmp(fnt, gt_ft_protein_match) == 0) {
-        GtRange range;
-        const char *attr;
-        attr = gt_feature_node_get_attribute(curnode, "name");
-        if (!attr)
-          continue;
-        if (strcmp(feature, attr) != 0)
-          continue;
-        range = gt_genome_node_get_range((GtGenomeNode*) curnode);
-        if ((range.end - range.start + 1) < 10UL)
-          continue;
-        (void) snprintf(header, BUFSIZ, "%s_"GT_WU"_"GT_WU"", buffer,
-                        range.start, range.end);
-        gt_hashmap_add(desc2node, (void*) gt_cstr_dup(header), (void*) curnode);
-      } else if (strcmp(fnt, real_feature) == 0) {
-        GtRange range;
-        range = gt_genome_node_get_range((GtGenomeNode*) curnode);
-        if ((range.end - range.start + 1) < 10UL)
-          continue;
-        (void) snprintf(header, BUFSIZ, "%s_"GT_WU"_"GT_WU"", buffer,
-                        range.start, range.end);
-        gt_hashmap_add(desc2node, (void*) gt_cstr_dup(header), (void*) curnode);
-      }
-    }
-    gt_feature_node_iterator_delete(fni);
-  }
-  gt_free(real_feature);
-
   num_of_clusters = gt_clustered_set_num_of_clusters(cs, err);
   for (i = 0; i < num_of_clusters; i++) {
     csi = gt_clustered_set_get_iterator(cs, i ,err);
     if (csi != NULL) {
       while (!had_err && (gt_clustered_set_iterator_next(csi, &elm, err)
              != GT_CLUSTERED_SET_ITERATOR_STATUS_END)) {
-        char clid[BUFSIZ];
+        char clid[BUFSIZ], *encseqid;
+        int rval;
         const char *encseqdesc;
-        char *encseqid;
-        GtUword desclen;
+        GtUword desclen, id = GT_UNDEF_UWORD;
+
         encseqdesc = gt_encseq_description(encseq, &desclen, elm);
         encseqid = gt_calloc((size_t) (desclen + 1), sizeof (char));
         (void) strncpy(encseqid, encseqdesc, (size_t) desclen);
         encseqid[desclen] = '\0';
-        tmp = (GtFeatureNode*) gt_hashmap_get(desc2node, (void*) encseqid);
+        rval = sscanf(encseqid, GT_WU, &id);
+        gt_assert(id != GT_UNDEF_UWORD);
+        tmp = (GtFeatureNode*) gt_hashmap_get(s->id_to_feat, (void*) id);
+        gt_assert(tmp);
         (void) snprintf(clid, BUFSIZ, ""GT_WU"", i);
         gt_feature_node_set_attribute(tmp, "clid", clid);
         gt_free(encseqid);
@@ -458,7 +418,8 @@ static int process_feature(GtLTRClusterStream *lcs,
         had_err = -1;
       }
       if (!had_err) {
-        (void) cluster_annotate_nodes(cs, encseq, feature, lcs->nodes, err);
+        (void) cluster_annotate_nodes(cs, encseq, feature, lcs->nodes, lcs,
+                                      err);
       }
     } else
       had_err = -1;
@@ -504,6 +465,10 @@ static int gt_ltr_cluster_stream_next(GtNodeStream *ns,
                        gt_ltr_cluster_prepare_seq_visitor_get_encseqs(lcs->lcv);
     lcs->feat_to_encseq_keys =
                       gt_ltr_cluster_prepare_seq_visitor_get_features(lcs->lcv);
+    lcs->feat_to_id =
+               gt_ltr_cluster_prepare_seq_visitor_get_feat_to_id_hash(lcs->lcv);
+    lcs->id_to_feat =
+               gt_ltr_cluster_prepare_seq_visitor_get_id_to_feat_hash(lcs->lcv);
     if (!had_err) {
       for (i = 0; i < gt_str_array_size(lcs->feat_to_encseq_keys); i++) {
         had_err = process_feature(lcs,

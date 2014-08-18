@@ -75,9 +75,8 @@ static GtOptionParser* gt_ltrclustering_option_parser_new(void *tool_arguments)
                                        " the smaller sequence a match needs to"
                                        " cover in order to cluster the two"
                                        " sequences of the match",
-                                       &arguments->psmall, 0, 0, 100UL);
+                                       &arguments->psmall, 80, 0, 100UL);
 
-  gt_option_is_mandatory(option);
   gt_option_parser_add_option(op, option);
 
   /* -plarge */
@@ -85,10 +84,8 @@ static GtOptionParser* gt_ltrclustering_option_parser_new(void *tool_arguments)
                                        " the larger sequence a match needs to"
                                        " cover in order to cluster the two"
                                        " sequences of the match",
-                                       &arguments->plarge, 0, 0, 100UL);
-  gt_option_is_mandatory(option);
+                                       &arguments->plarge, 20, 0, 100UL);
   gt_option_parser_add_option(op, option);
-  gt_option_is_mandatory(option);
 
   /* -usefeatures */
   option = gt_option_new_string_array("usefeatures", "list of features used "

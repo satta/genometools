@@ -37,8 +37,11 @@ struct GtLTRClusterPrepareSeqVisitor {
   const GtNodeVisitor parent_instance;
   GtRegionMapping *rm;
   GtHashmap *feat_to_encseq,
-            *encseq_builders;
+            *encseq_builders,
+            *feat_to_id,
+            *id_to_feat;
   GtStrArray *feat_to_encseq_keys;
+  GtUword cur_feature_id;
   GtAlphabet *a;
 };
 
@@ -66,16 +69,13 @@ static int extract_feature_seq(GtEncseqBuilder *b, const char *header,
 }
 
 static int gt_ltr_cluster_prepare_seq_visitor_feature_node(GtNodeVisitor *nv,
-                                               GtFeatureNode *fn,
-                                               GtError *err)
+                                                           GtFeatureNode *fn,
+                                                           GtError *err)
 {
   GtLTRClusterPrepareSeqVisitor *lcv;
   GtFeatureNode *curnode;
   GtFeatureNodeIterator *fni;
-  GtStr *seqid = NULL;
-
   const char *fnt;
-  char buffer[BUFSIZ];
   int had_err = 0;
   bool first_ltr = true;
   gt_error_check(err);
@@ -87,32 +87,23 @@ static int gt_ltr_cluster_prepare_seq_visitor_feature_node(GtNodeVisitor *nv,
 
   while (!had_err && (curnode = gt_feature_node_iterator_next(fni))) {
     GtFile *file = NULL;
+    char header[BUFSIZ];
     fnt = gt_feature_node_get_type(curnode);
-    if (strcmp(fnt, gt_ft_repeat_region) == 0) {
-      const char *rid;
-      GtUword id;
-      seqid = gt_genome_node_get_seqid((GtGenomeNode*) curnode);
-      rid = gt_feature_node_get_attribute(curnode, "ID");
-      (void) sscanf(rid, "repeat_region"GT_WU"", &id);
-      (void) snprintf(buffer, BUFSIZ, "%s_"GT_WU"", gt_str_get(seqid), id);
-    } else if (strcmp(fnt, gt_ft_protein_match) == 0) {
-      GtRange range;
+    (void) snprintf(header, BUFSIZ, GT_WU,
+//                    gt_str_get(gt_genome_node_get_seqid((GtGenomeNode*) fn)),
+                    ++lcv->cur_feature_id);
+    if (strcmp(fnt, gt_ft_protein_match) == 0) {
       const char *attr;
       GtEncseqBuilder *eb;
-      char header[BUFSIZ];
       attr = gt_feature_node_get_attribute(curnode, "name");
       if (!attr)
         continue;
-      range = gt_genome_node_get_range((GtGenomeNode*) curnode);
-      (void) snprintf(header, BUFSIZ, "%s_"GT_WU"_"GT_WU"", buffer, range.start,
-                      range.end);
       if (!gt_hashmap_get(lcv->encseq_builders, attr)) {
         eb = gt_encseq_builder_new(lcv->a);
         gt_encseq_builder_create_ssp_tab(eb);
         gt_encseq_builder_create_sds_tab(eb);
         gt_encseq_builder_create_des_tab(eb);
-        gt_hashmap_add(lcv->encseq_builders, gt_cstr_dup(attr),
-                       eb);
+        gt_hashmap_add(lcv->encseq_builders, gt_cstr_dup(attr), eb);
         gt_log_log("builder %p added for feature %s", eb, attr);
         gt_str_array_add_cstr(lcv->feat_to_encseq_keys, attr);
       } else {
@@ -120,6 +111,8 @@ static int gt_ltr_cluster_prepare_seq_visitor_feature_node(GtNodeVisitor *nv,
       }
       had_err = extract_feature_seq(eb, header, lcv->rm,
                                     (GtGenomeNode*) curnode, fnt, err);
+      gt_hashmap_add(lcv->id_to_feat, (void*) lcv->cur_feature_id, curnode);
+      gt_hashmap_add(lcv->id_to_feat, curnode, (void*) lcv->cur_feature_id);
       gt_file_delete(file);
     } else if (strcmp(fnt, gt_ft_LTR_retrotransposon) == 0)
       continue;
@@ -127,7 +120,6 @@ static int gt_ltr_cluster_prepare_seq_visitor_feature_node(GtNodeVisitor *nv,
       char *tmp;
       GtRange range;
       GtEncseqBuilder *eb;
-      char header[BUFSIZ];  /* XXX: use GtStr for safety */
       if (strcmp(fnt, gt_ft_long_terminal_repeat) == 0) {
         if (first_ltr) {
           tmp = gt_cstr_dup("lLTR");
@@ -141,8 +133,6 @@ static int gt_ltr_cluster_prepare_seq_visitor_feature_node(GtNodeVisitor *nv,
         gt_free(tmp);
         continue;
       }
-      (void) snprintf(header, BUFSIZ, "%s_"GT_WU"_"GT_WU"", buffer, range.start,
-                      range.end);
       if (!gt_hashmap_get(lcv->encseq_builders, tmp)) {
         eb = gt_encseq_builder_new(lcv->a);
         gt_encseq_builder_create_ssp_tab(eb);
@@ -156,6 +146,8 @@ static int gt_ltr_cluster_prepare_seq_visitor_feature_node(GtNodeVisitor *nv,
       }
       had_err = extract_feature_seq(eb, header, lcv->rm,
                                     (GtGenomeNode*) curnode, fnt, err);
+      gt_hashmap_add(lcv->id_to_feat, (void*) lcv->cur_feature_id, curnode);
+      gt_hashmap_add(lcv->id_to_feat, curnode, (void*) lcv->cur_feature_id);
       gt_free(tmp);
       gt_file_delete(file);
     }
@@ -172,6 +164,8 @@ void gt_ltr_cluster_prepare_seq_visitor_free(GtNodeVisitor *v)
   gt_region_mapping_delete(lcv->rm);
   gt_str_array_delete(lcv->feat_to_encseq_keys);
   gt_hashmap_delete(lcv->feat_to_encseq);
+  gt_hashmap_delete(lcv->feat_to_id);
+  gt_hashmap_delete(lcv->id_to_feat);
   gt_hashmap_delete(lcv->encseq_builders);
   gt_alphabet_delete(lcv->a);
 }
@@ -206,6 +200,8 @@ GtNodeVisitor* gt_ltr_cluster_prepare_seq_visitor_new(GtRegionMapping *rm,
   lcv->a = gt_alphabet_new_dna();
   lcv->encseq_builders = gt_hashmap_new(GT_HASH_STRING, gt_free_func,
                                         (GtFree) gt_encseq_builder_delete);
+  lcv->feat_to_id = gt_hashmap_new(GT_HASH_DIRECT, NULL, NULL);
+  lcv->id_to_feat = gt_hashmap_new(GT_HASH_DIRECT, NULL, NULL);
   lcv->feat_to_encseq_keys = gt_str_array_new();
   return nv;
 }
@@ -248,6 +244,7 @@ GtHashmap* gt_ltr_cluster_prepare_seq_visitor_get_encseqs(
                               v,
                               NULL);
   }
+  gt_log_log("...finished");
   return gt_hashmap_ref(v->feat_to_encseq);
 }
 
@@ -256,4 +253,17 @@ GtStrArray* gt_ltr_cluster_prepare_seq_visitor_get_features(
 {
   gt_assert(v && v->feat_to_encseq_keys);
   return gt_str_array_ref(v->feat_to_encseq_keys);
+}
+
+GtHashmap* gt_ltr_cluster_prepare_seq_visitor_get_id_to_feat_hash(
+                                              GtLTRClusterPrepareSeqVisitor *v)
+{
+  gt_assert(v && v->id_to_feat);
+  return gt_hashmap_ref(v->id_to_feat);
+}
+
+GtHashmap* gt_ltr_cluster_prepare_seq_visitor_get_feat_to_id_hash(
+                                              GtLTRClusterPrepareSeqVisitor *v)
+{
+  return gt_hashmap_ref(v->feat_to_id);
 }
