@@ -322,6 +322,7 @@ static GtMatchIteratorStatus gt_match_iterator_last_next(GT_UNUSED
       gt_str_append_cstr(matchfilename, "/");
       gt_str_append_cstr(matchfilename, matchfilehash);
       gt_str_append_cstr(matchfilename, ".match");
+      gt_free(matchfilehash);
     }
 
     if (!had_err && !gt_file_exists(gt_str_get(matchfilename))) {

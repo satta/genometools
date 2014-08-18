@@ -454,8 +454,6 @@ static int gt_ltr_cluster_stream_next(GtNodeStream *ns,
                        gt_ltr_cluster_prepare_seq_visitor_get_encseqs(lcs->lcv);
     lcs->feat_to_encseq_keys =
                       gt_ltr_cluster_prepare_seq_visitor_get_features(lcs->lcv);
-    lcs->feat_to_id =
-               gt_ltr_cluster_prepare_seq_visitor_get_feat_to_id_hash(lcs->lcv);
     lcs->id_to_feat =
                gt_ltr_cluster_prepare_seq_visitor_get_id_to_feat_hash(lcs->lcv);
     if (!had_err) {
@@ -492,6 +490,7 @@ static void gt_ltr_cluster_stream_free(GtNodeStream *ns)
   GtLTRClusterStream *lcs = gt_ltr_cluster_stream_cast(ns);
   gt_node_visitor_delete((GtNodeVisitor*) lcs->lcv);
   gt_hashmap_delete(lcs->feat_to_encseq);
+  gt_hashmap_delete(lcs->id_to_feat);
   gt_str_array_delete(lcs->feat_to_encseq_keys);
   for (i = 0; i < gt_array_size(lcs->nodes); i++)
     gt_genome_node_delete(*(GtGenomeNode**) gt_array_get(lcs->nodes, i));

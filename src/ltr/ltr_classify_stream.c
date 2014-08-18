@@ -169,9 +169,7 @@ static int check_ambiguous_candidates(GtArray *candidates, GtArray *groups,
   GtBittab *group;
   GtArray *compat_groups;
   int had_err = 0;
-  GtUword i,
-                j;
-
+  GtUword i, j;
   gt_error_check(err);
   gt_assert(candidates && groups);
 
