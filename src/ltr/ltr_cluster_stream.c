@@ -299,19 +299,12 @@ static void free_hash(void *elem)
 }
 
 static int cluster_annotate_nodes(GtClusteredSet *cs, GtEncseq *encseq,
-                                  const char *feature, GtArray *nodes,
                                   GtLTRClusterStream *s, GtError *err)
 {
-  GtFeatureNodeIterator *fni;
-  GtFeatureNode *curnode = NULL, *tmp;
+  GtFeatureNode *tmp;
   GtClusteredSetIterator *csi = NULL;
-  GtGenomeNode *gn;
-  GtHashmap *desc2node;
-  GtStr *seqid = NULL;
   int had_err = 0;
   GtUword num_of_clusters, i, elm;
-  const char *fnt = NULL;
-  char buffer[BUFSIZ], *real_feature;
   gt_error_check(err);
 
   num_of_clusters = gt_clustered_set_num_of_clusters(cs, err);
@@ -321,7 +314,7 @@ static int cluster_annotate_nodes(GtClusteredSet *cs, GtEncseq *encseq,
       while (!had_err && (gt_clustered_set_iterator_next(csi, &elm, err)
              != GT_CLUSTERED_SET_ITERATOR_STATUS_END)) {
         char clid[BUFSIZ], *encseqid;
-        int rval;
+        GT_UNUSED int rval;
         const char *encseqdesc;
         GtUword desclen, id = GT_UNDEF_UWORD;
 
@@ -330,6 +323,7 @@ static int cluster_annotate_nodes(GtClusteredSet *cs, GtEncseq *encseq,
         (void) strncpy(encseqid, encseqdesc, (size_t) desclen);
         encseqid[desclen] = '\0';
         rval = sscanf(encseqid, GT_WU, &id);
+        gt_assert(rval > 0);
         gt_assert(id != GT_UNDEF_UWORD);
         tmp = (GtFeatureNode*) gt_hashmap_get(s->id_to_feat, (void*) id);
         gt_assert(tmp);
@@ -341,7 +335,6 @@ static int cluster_annotate_nodes(GtClusteredSet *cs, GtEncseq *encseq,
     gt_clustered_set_iterator_delete(csi, err);
     csi = NULL;
   }
-  gt_hashmap_delete(desc2node);
   return had_err;
 }
 
@@ -397,8 +390,7 @@ static int process_feature(GtLTRClusterStream *lcs,
     GtMatch *tmp_match;
     const char *description;
     char *output;
-    GtUword desclen,
-                  num_of_seq;
+    GtUword desclen, num_of_seq;
 
     seqdesc2seqnum = gt_hashmap_new(GT_HASH_STRING, free_hash, NULL);
     num_of_seq = gt_encseq_num_of_sequences(encseq);
@@ -418,12 +410,10 @@ static int process_feature(GtLTRClusterStream *lcs,
         had_err = -1;
       }
       if (!had_err) {
-        (void) cluster_annotate_nodes(cs, encseq, feature, lcs->nodes, lcs,
-                                      err);
+        (void) cluster_annotate_nodes(cs, encseq, lcs, err);
       }
     } else
       had_err = -1;
-
     for (i = 0; i < gt_array_size(matches); i++) {
       tmp_match = *(GtMatch**) gt_array_get(matches, i);
       gt_match_delete(tmp_match);
@@ -434,7 +424,6 @@ static int process_feature(GtLTRClusterStream *lcs,
     gt_clustered_set_delete(cs, err);
   }
   gt_match_iterator_delete(mi);
-
   return had_err;
 }
 
