@@ -34,7 +34,5 @@ GtStrArray*    gt_ltr_cluster_prepare_seq_visitor_get_features(
                                               GtLTRClusterPrepareSeqVisitor *v);
 GtHashmap*     gt_ltr_cluster_prepare_seq_visitor_get_id_to_feat_hash(
                                               GtLTRClusterPrepareSeqVisitor *v);
-GtHashmap*     gt_ltr_cluster_prepare_seq_visitor_get_feat_to_id_hash(
-                                              GtLTRClusterPrepareSeqVisitor *v);
 
 #endif

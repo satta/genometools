@@ -110,7 +110,7 @@ static int gt_ltrclustering_runner(int argc, const char **argv,
                *ltr_cluster_stream  = NULL,
                *ltr_classify_stream = NULL,
                *gff3_out_stream     = NULL;
-  GtRegionMapping *rm;
+  GtRegionMapping *rm = NULL;
   int had_err = 0, arg = parsed_args;
   gt_error_check(err);
   gt_assert(arguments);
