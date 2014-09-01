@@ -550,6 +550,7 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
     seedptr = &(tir_stream->seedinfo.seed.spaceSeed[seedcounter]);
     gt_assert(tir_stream->seedinfo.max_tir_length >= seedptr->len);
     alilen = tir_stream->seedinfo.max_tir_length - seedptr->len;
+    gt_log_log("alilen  %lu", (unsigned long) alilen);
     seqstart1 = gt_encseq_seqstartpos(tir_stream->encseq,
                                       seedptr->contignumber);
     seqend1 = seqstart1
@@ -559,17 +560,17 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
     seqstart2 = GT_REVERSEPOS(total_length, seqend1);
     seqend2 = GT_REVERSEPOS(total_length, seqstart1);
 
-    /* gt_mutex_lock(tir_stream->wmutex);
+     gt_mutex_lock(tir_stream->wmutex);
     GT_UNUSED char buf[seedptr->len+1];
     buf[seedptr->len] = '\0';
     gt_encseq_extract_decoded(tir_stream->encseq, buf,
                               seedptr->pos1, seedptr->pos1 + seedptr->len -1);
-    printf("%s ", buf);
+    gt_log_log("%s ", buf);
     gt_encseq_extract_decoded(tir_stream->encseq, buf,
                               mirpos2,
                               mirpos2 + seedptr->len - 1);
-    printf("%s\n", buf);
-    gt_mutex_unlock(tir_stream->wmutex); */
+    gt_log_log("%s\n", buf);
+    gt_mutex_unlock(tir_stream->wmutex);
 
     /* left (reverse) xdrop */
     if (seedptr->pos1 > seqstart1 && mirpos2 > seqstart2)
@@ -632,6 +633,11 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
       xdropbest_right.score = 0;
     }
 
+    gt_log_log("left i: %lu j: %lu",   (unsigned long) xdropbest_left.ivalue,
+                                  (unsigned long) xdropbest_left.jvalue);
+    gt_log_log("right i: %lu j: %lu",   (unsigned long) xdropbest_right.ivalue,
+                                  (unsigned long) xdropbest_right.jvalue);
+
       /* store positions for the found TIR */
     pair.contignumber = seedptr->contignumber;
     pair.tsd_length = 0;
@@ -668,7 +674,8 @@ static int gt_tir_searchforTIRs(GtTIRStream *tir_stream,
     } else {
       if (pair.skip) gt_log_log("skipped: skip was set");
       if (gt_double_smaller_double(pair.similarity,
-                           tir_stream->similarity_threshold)) gt_log_log("skipped: sim was %f", pair.similarity);
+                           tir_stream->similarity_threshold))
+        gt_log_log("skipped: sim was %f", pair.similarity);
       skipped++;
     }
   }
@@ -736,7 +743,7 @@ static int gt_tir_stream_next(GtNodeStream *ns, GtGenomeNode **gn,
                 seqstartpos + gt_encseq_seqlength(tir_stream->encseq, seqno)-1);
         gt_log_log("endpos: %lu", endpos);
         partlen = endpos - startpos + 1;
-        gt_log_log("partlen: %lu", partlen);
+        gt_log_log("partlen: %lu\n ", partlen);
 
         gt_encseq_extract_encoded(tir_stream->encseq, buf,
                                   seqstartpos + startpos, seqstartpos + endpos);
@@ -768,6 +775,7 @@ static int gt_tir_stream_next(GtNodeStream *ns, GtGenomeNode **gn,
 
         tinfo.s = tir_stream;
         tinfo.err = err;
+        tir_stream->cur_seed = 0;
         /* seed-extend */
         if (!had_err && gt_multithread(gt_searchforTIRs_threadfunc,
                                        &tinfo, err) != 0) {
