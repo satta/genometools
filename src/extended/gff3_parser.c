@@ -1745,7 +1745,7 @@ static int gff3_parser_parse_fasta_entry(GtQueue *genome_nodes,
 }
 
 static int process_orphans(GtOrphanage *orphanage, GtFeatureInfo *feature_info,
-                           bool strict, unsigned int last_terminator,
+                           bool strict, bool tidy, unsigned int last_terminator,
                            GtTypeChecker *type_checker, GtQueue *genome_nodes,
                            GtError *err)
 {
@@ -1756,6 +1756,7 @@ static int process_orphans(GtOrphanage *orphanage, GtFeatureInfo *feature_info,
   while (!had_err && (orphan = gt_orphanage_get_orphan(orphanage))) {
     const char *parent_attr;
     char *parent_attr_dup;
+    bool skip = false;
     GtSplitter *splitter;
     GtUword i;
     parent_attr = gt_feature_node_get_attribute((GtFeatureNode*) orphan,
@@ -1769,15 +1770,24 @@ static int process_orphans(GtOrphanage *orphanage, GtFeatureInfo *feature_info,
     for (i = 0; !had_err && i < gt_splitter_size(splitter); i++) {
       const char *parent = gt_splitter_get_token(splitter, i);
       if (gt_orphanage_parent_is_missing(orphanage, parent)) {
-        gt_error_set(err, "%s \"%s\" on line %u in file \"%s\" was not defined "
-                     "(via \"%s=\")", GT_GFF_PARENT, parent,
-                     gt_genome_node_get_line_number(orphan),
-                     gt_genome_node_get_filename(orphan) , GT_GFF_ID);
+        if (!tidy) {
+          gt_error_set(err, "%s \"%s\" on line %u in file \"%s\" was not "
+                       "defined (via \"%s=\")", GT_GFF_PARENT, parent,
+                       gt_genome_node_get_line_number(orphan),
+                       gt_genome_node_get_filename(orphan), GT_GFF_ID);
+          had_err = -1;
+        } else {
+          gt_warning("%s \"%s\" on line %u in file \"%s\" was not defined "
+                     "(via \"%s=\"), skipping %s feature", GT_GFF_PARENT,
+                     parent, gt_genome_node_get_line_number(orphan),
+                     gt_genome_node_get_filename(orphan), GT_GFF_ID,
+                     gt_feature_node_get_type((GtFeatureNode*) orphan));
+          skip = true;
+        }
         gt_genome_node_delete(orphan);
-        had_err = -1;
       }
     }
-    if (!had_err) {
+    if (!had_err && !skip) {
       had_err = process_child(orphan, splitter, feature_info, strict,
                               last_terminator, type_checker, genome_nodes, err);
     }
@@ -1994,7 +2004,8 @@ static int parse_meta_gff3_line(GtGFF3Parser *parser, GtQueue *genome_nodes,
     /* now all nodes are complete */
     if (!parser->strict) {
       had_err = process_orphans(parser->orphanage, parser->feature_info,
-                                parser->strict, parser->last_terminator,
+                                parser->strict, parser->tidy,
+                                parser->last_terminator,
                                 parser->type_checker, genome_nodes, err);
     }
     parser->incomplete_node = false;
@@ -2163,7 +2174,8 @@ int gt_gff3_parser_parse_genome_nodes(GtGFF3Parser *parser, int *status_code,
 
   if (!had_err && !parser->strict) {
     had_err = process_orphans(parser->orphanage, parser->feature_info,
-                              parser->strict, parser->last_terminator,
+                              parser->strict, parser->tidy,
+                              parser->last_terminator,
                               parser->type_checker, genome_nodes, err);
   }
 
