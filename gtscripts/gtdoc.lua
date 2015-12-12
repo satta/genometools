@@ -104,6 +104,25 @@ local function process_file(filename, be_verbose, is_lua)
   end
 end
 
+local function iter (a, i) -- taken from PiL, page 59
+  i = i + 1
+  local v = a[i]
+  if v then
+    return i, v
+  end
+end
+
+function sorted_dir(dir)
+  local entries = {}
+  local i = 0
+  for name in lfs.dir(dir) do
+    i = i + 1
+    entries[i] = name
+  end
+  table.sort(entries)
+  return iter, entries, 0
+end
+
 local export = nil
 local is_lua = nil
 
@@ -127,7 +146,7 @@ else
   for _, v in ipairs(export) do
     local filename = gt_home .. "/" .. v
     if is_dir(filename) then
-      for f in lfs.dir(filename) do
+      for _, f in sorted_dir(filename) do
         local filename = filename .. "/" .. f
         process_file(filename, be_verbose, is_lua)
       end
